@@ -339,6 +339,46 @@ final class MixerModel: ObservableObject {
         persist()
     }
 
+    // MARK: Whole-mixer actions (menu bar)
+
+    func muteAll(_ on: Bool) {
+        for i in 0..<4 where !strips[i].deviceUID.isEmpty {
+            strips[i].mute = on
+            pushStrip(i)
+        }
+    }
+
+    func clearSolos() {
+        for i in 0..<4 where strips[i].solo {
+            strips[i].solo = false
+            pushStrip(i)
+        }
+    }
+
+    func panicAll() {
+        for i in 0..<4 { panic(i) }
+    }
+
+    var anyMuted: Bool { strips.contains { !$0.deviceUID.isEmpty && $0.mute } }
+    var anySoloed: Bool { strips.contains(where: \.solo) }
+    var midiSlots: [Int] { (0..<4).filter { strips[$0].isMidi } }
+    var assignedSlots: [Int] { (0..<4).filter { !strips[$0].deviceUID.isEmpty } }
+
+    func toggleKeyboard() {
+        if let cur = keyboardSlot { disableKeyboard(); _ = cur }
+        else if let first = midiSlots.first { enableKeyboard(first) }
+    }
+
+    func shiftOctave(_ delta: Int) {
+        guard let s = keyboardSlot else { return }
+        panic(s)                      // release anything held at the old octave
+        strips[s].octave = max(0, min(8, strips[s].octave + delta))
+        keyboardMidi?.octave = strips[s].octave
+        persist()
+    }
+
+    var keyboardActive: Bool { keyboardSlot != nil }
+
     func panic(_ slot: Int) {
         keyboardMidi?.allNotesOff()
         if let engine { macamp_midi_all_notes_off(engine, Int32(slot)) }
@@ -1012,6 +1052,15 @@ struct ContentView: View {
 struct MacAmpApp: App {
     @StateObject private var model = MixerModel()
 
+    /// Names the strip by its device, so the menu reads "Mute Amphonix 2 Audio"
+    /// rather than making you remember which number is which.
+    private func muteLabel(_ i: Int) -> String {
+        let s = model.strips[i]
+        let name = s.isMidi ? "MIDI Instrument"
+            : (model.inputs.first { $0.uid == s.deviceUID }?.name ?? "Input \(i + 1)")
+        return (s.mute ? "Unmute " : "Mute ") + name
+    }
+
     var body: some Scene {
         Window("MacAmp", id: "main") {
             ContentView(model: model)
@@ -1019,5 +1068,76 @@ struct MacAmpApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
+        .commands {
+            // A single-window utility has no documents, so the default File
+            // commands are all dead weight.
+            CommandGroup(replacing: .newItem) { }
+            CommandGroup(replacing: .saveItem) { }
+
+            CommandMenu("Mixer") {
+                Button(model.anyMuted ? "Unmute All" : "Mute All") {
+                    model.muteAll(!model.anyMuted)
+                }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
+
+                if model.anySoloed {
+                    Button("Clear Solos") { model.clearSolos() }
+                        .keyboardShortcut("s", modifiers: [.command, .shift])
+                }
+
+                Divider()
+
+                // Only strips with something assigned. An entry for an empty
+                // strip does nothing, so it should not be there at all.
+                ForEach(model.assignedSlots, id: \.self) { i in
+                    Button(muteLabel(i)) {
+                        model.strips[i].mute.toggle()
+                        model.pushStrip(i)
+                    }
+                    .keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command)
+                }
+
+                if !model.assignedSlots.isEmpty { Divider() }
+
+                Button("Refresh Devices") { model.refreshDevices() }
+                    .keyboardShortcut("r", modifiers: .command)
+            }
+
+            CommandMenu("Instrument") {
+                if model.midiSlots.isEmpty {
+                    // Nothing here applies without a MIDI strip. Say why rather
+                    // than presenting a menu of greyed-out verbs.
+                    Text("Set an input to MIDI Instrument to use these")
+                } else {
+                    Button(model.keyboardActive ? "Stop Musical Typing" : "Start Musical Typing") {
+                        model.toggleKeyboard()
+                    }
+                    .keyboardShortcut("k", modifiers: .command)
+
+                    // Octave only means something while the keyboard is live.
+                    if model.keyboardActive {
+                        Button("Octave Up")   { model.shiftOctave(1)  }
+                            .keyboardShortcut("=", modifiers: .command)
+                        Button("Octave Down") { model.shiftOctave(-1) }
+                            .keyboardShortcut("-", modifiers: .command)
+                    }
+
+                    Divider()
+
+                    // Worth a shortcut you can hit without looking: a stuck
+                    // note-on does not stop on its own.
+                    Button("Panic — All Notes Off") { model.panicAll() }
+                        .keyboardShortcut(".", modifiers: .command)
+                }
+            }
+
+            CommandGroup(replacing: .help) {
+                Button("MacAmp on GitHub") {
+                    if let u = URL(string: "https://github.com/adamkbritsch/macamp") {
+                        NSWorkspace.shared.open(u)
+                    }
+                }
+            }
+        }
     }
 }

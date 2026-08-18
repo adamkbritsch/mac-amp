@@ -311,6 +311,25 @@ two sources without them. Tone shaping is a different job.
 It also does not stream or encode. LadioCast's Icecast/RTMP/SHOUTcast half is
 broadcast plumbing, and this is not a broadcast tool.
 
+## Menu bar
+
+The default SwiftUI menus for a document app do not apply here, so File and Save
+are removed and two menus take their place.
+
+**Mixer** — Mute All / Unmute All (`⇧⌘M`), Clear Solos (`⇧⌘S`), a mute entry per
+assigned strip (`⌘1`–`⌘4`, named after the device rather than the slot number),
+and Refresh Devices (`⌘R`).
+
+**Instrument** — Musical Typing on or off (`⌘K`), Octave Up / Down (`⌘=` / `⌘-`),
+and **Panic — All Notes Off** (`⌘.`), which is worth a shortcut you can hit
+without looking, because a stuck note-on does not stop on its own.
+
+Entries that would do nothing are absent rather than greyed out: strips with no
+device assigned have no mute entry, Clear Solos appears only when something is
+soloed, and the octave commands only while the keyboard is live. With no MIDI
+strip at all, the Instrument menu says what to do instead of listing disabled
+verbs.
+
 ## Permissions and signing
 
 Capturing from any audio input requires TCC microphone authorisation, including
