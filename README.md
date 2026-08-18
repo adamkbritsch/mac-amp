@@ -4,13 +4,23 @@
 
 <h1 align="center">MacAmp</h1>
 
-A small live mixer for macOS. Plug in a guitar and a microphone, and route each
-of them to any combination of output devices — the same one, different ones,
-several at once — with per-source gain, pan, mute, solo, a noise gate and
-metering. All live, all without opening a DAW.
+**An amplifier for your instruments, using the Mac you already own.**
 
-Four inputs, four output buses, a routing matrix, and nothing else. The tone is
-your hardware's business — MacAmp only does the part macOS itself refuses to.
+Plug in a guitar, a microphone, or a MIDI keyboard, and hear it out loud —
+through the Mac's speakers, your headphones, or whatever else is connected.
+Immediately, while you play, with nothing to set up and no DAW to open.
+
+That is the whole idea. Your interface already has the sound. Your Mac already
+has the speakers. macOS will happily *record* what comes in, but it will not
+simply play it back out — so an instrument plugged into a Mac is silent until
+some application volunteers to carry the signal across. MacAmp is that
+application, and it does nothing else.
+
+It carries four inputs at once and can send each to any combination of four
+outputs, which makes it a small mixer as well: practise guitar through the
+speakers while a microphone goes to headphones, or run both into both, with
+gain, pan, mute, solo, a noise gate and metering on each. The tone stays your
+hardware's business — MacAmp only does the part macOS refuses to.
 
 <p align="center">
   <img src="assets/screenshot.png" alt="MacAmp — four input strips with gain, pan, mute, solo, gate and metering, routed to four output buses" width="860">
