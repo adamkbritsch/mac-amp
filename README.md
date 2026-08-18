@@ -18,8 +18,8 @@ your hardware's business — MacAmp only does the part macOS itself refuses to.
 
 > A personal project, built around a
 > [Sonicake Amphonix 2](https://www.sonicake.com/products/amphonix-ii) going
-> into a MacBook Pro. Nothing about it is specific to that amp; any
-> class-compliant USB audio input works. Not affiliated with Sonicake.
+> into a Mac. Nothing about it is specific to that amp; any class-compliant USB
+> audio input works. Not affiliated with Sonicake.
 
 ## Why
 
@@ -124,7 +124,7 @@ and tells you.
 
 ## Requirements
 
-- **Apple Silicon Mac, macOS 13+.** Built and tested on macOS 26.
+- **A Mac running macOS 13 or later.**
 - **Command Line Tools** are enough for the app itself — `swiftc` compiles
   SwiftUI fine, and there is no Xcode project or `xcodebuild` anywhere.
 - **Full Xcode, for the icon only.** `MacAmp.icon` is an Icon Composer bundle
