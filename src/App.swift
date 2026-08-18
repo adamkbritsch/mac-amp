@@ -461,20 +461,24 @@ struct ContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
             // No title bar, so the traffic lights float directly over the
-            // gradient. 62pt of leading clears them; the fixed height keeps the
-            // wordmark optically centred on them.
-            HStack(spacing: 8) {
+            // gradient. The wordmark is centred on the window rather than the
+            // remaining space -- a ZStack, not an HStack with Spacers, so the
+            // fault text appearing on the right cannot shove it off-centre.
+            ZStack {
                 Text("MacAmp")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(DS.wordmark)
-                Spacer()
+                    .tracking(0.4)
                 if model.permissionDenied {
-                    Text("MICROPHONE ACCESS DENIED")
-                        .font(.system(size: 9, weight: .bold)).foregroundStyle(DS.fault)
+                    HStack {
+                        Spacer()
+                        Text("MICROPHONE ACCESS DENIED")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(DS.fault)
+                    }
                 }
             }
-            .padding(.leading, 62)
-            .frame(height: 24)
+            .frame(height: 22)
 
             HStack(alignment: .top, spacing: 13) {
                 VStack(spacing: 9) {
