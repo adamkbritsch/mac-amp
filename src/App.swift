@@ -460,12 +460,30 @@ struct StripView: View {
 enum TitleBar {
     /// How far the window buttons are pushed down from the top.
     static let buttonDrop: CGFloat = 7
-    /// Standard macOS window button, 12pt square.
-    static let buttonHeight: CGFloat = 12
+
+    /// Measured on screen, not assumed: with buttonDrop = 7 the close button's
+    /// frame lands 8pt from the window top (AppKit adds one) and is 14pt tall,
+    /// not the 12pt square it looks like. So its bottom edge sits here.
+    static let buttonBottom: CGFloat = 8 + 14
+
     /// Requested gap between the bottom of the lights and the top of the title.
     static let gap: CGFloat = 2
 
-    static var titleTop: CGFloat { buttonDrop + buttonHeight + gap }   // 21
+    static let wordmarkSize: CGFloat = 18
+
+    /// A Text view's top edge is NOT where its letters start. The font puts
+    /// invisible leading above the cap height -- 4.52pt for SF 18pt bold -- so
+    /// padding alone lands the glyphs that much too low. Measured from the real
+    /// font metrics so it self-corrects if wordmarkSize changes.
+    static var capInset: CGFloat {
+        let f = NSFont.systemFont(ofSize: wordmarkSize, weight: .bold)
+        let lineHeight = NSLayoutManager().defaultLineHeight(for: f)
+        let lead = lineHeight - (f.ascender - f.descender)
+        return f.ascender - f.capHeight + lead
+    }
+
+    /// Where the Text VIEW must start for the GLYPHS to sit `gap` below the lights.
+    static var titleTop: CGFloat { buttonBottom + gap - capInset }
 }
 
 // MARK: - Traffic lights
@@ -547,7 +565,7 @@ struct ContentView: View {
             // fault text appearing on the right cannot shove it off-centre.
             ZStack {
                 Text("MacAmp")
-                    .font(.system(size: 18, weight: .bold))
+                    .font(.system(size: TitleBar.wordmarkSize, weight: .bold))
                     .foregroundStyle(DS.wordmark)
                     .tracking(0.3)
                 if model.permissionDenied {
