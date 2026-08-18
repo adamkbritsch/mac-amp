@@ -16,9 +16,10 @@ your hardware's business — MacAmp only does the part macOS itself refuses to.
   <img src="assets/screenshot.png" alt="MacAmp — four input strips with gain, pan, mute, solo, gate and metering, routed to four output buses" width="860">
 </p>
 
-> A personal project, built for a Sonicake Amphonix 2 going into a MacBook Pro.
-> Nothing about it is specific to that amp; any class-compliant USB audio input
-> works. Not affiliated with Sonicake.
+> A personal project, built around a
+> [Sonicake Amphonix 2](https://www.sonicake.com/products/amphonix-ii) going
+> into a MacBook Pro. Nothing about it is specific to that amp; any
+> class-compliant USB audio input works. Not affiliated with Sonicake.
 
 ## Why
 
@@ -161,6 +162,33 @@ and tells you.
   in and it returns.
 - **Plays MIDI.** Any strip can be a MIDI instrument instead of an audio input,
   driven by a hardware controller or by the computer keyboard.
+
+### What the Amphonix 2 actually sends
+
+The [Amphonix 2](https://www.sonicake.com/products/amphonix-ii) is a pocket
+headphone amp that presents itself over USB-C as a class-compliant USB Audio 2.0
+device — stereo in and out, locked to 44.1 kHz, 24-bit. Everything it makes
+arrives on that one stereo stream, which is why MacAmp needs no per-feature
+support:
+
+- **Your guitar**, already shaped by the amp's models and its nine effect
+  modules. That processing happens in hardware before the signal reaches USB.
+- **Its drum machine.** Sonicake Manager exposes Drum Style, Type, BPM and
+  Volume, and it is worth being precise about where that audio originates: the
+  Mac app ships no drum audio at all and does not link an audio playback
+  framework. Those are *parameter names*, sent to the device. The patterns are
+  synthesised in the hardware, so they arrive over USB mixed with your guitar
+  and MacAmp captures them like anything else. Styles cover rock, blues, jazz,
+  funk, pop, electronic and world, plus a plain metronome.
+- **Bluetooth backing tracks** streamed to the amp from a phone, for the same
+  reason.
+
+It also exposes a **MIDI endpoint**, so it appears in a strip's MIDI source list
+as well as its audio one.
+
+The practical consequence: you do not route the drums separately. Turn them on
+in Sonicake Manager and they appear in the same strip as the guitar, already
+balanced by the amp's own drum volume.
 
 ### MIDI
 

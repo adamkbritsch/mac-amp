@@ -497,7 +497,7 @@ struct GateLamp: View {
     var body: some View {
         let open = meters.l(index) > 0.002
         Text(open ? "OPEN" : "SHUT")
-            .font(.system(size: 8, weight: .bold))
+            .font(.system(size: 9, weight: .bold))
             .foregroundStyle(open ? DS.glow : DS.textDim)
     }
 }
@@ -514,7 +514,7 @@ private struct StateButton: View {
     var body: some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
                 .frame(width: compact ? 23 : 40, height: 20)
                 .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
                     .fill(on ? (faultTint ? DS.fault.opacity(0.85) : DS.glowDeep.opacity(0.95))
@@ -533,10 +533,10 @@ private struct Row<Content: View>: View {
     @ViewBuilder var content: Content
     var body: some View {
         HStack(spacing: 9) {
-            Text(label).font(.system(size: 10, weight: .medium))
+            Text(label).font(.system(size: 11, weight: .medium))
                 .foregroundStyle(DS.textDim).frame(width: 30, alignment: .leading)
             content
-            Text(readout).font(.system(size: 9, weight: .medium, design: .monospaced))
+            Text(readout).font(.system(size: 10, weight: .medium, design: .monospaced))
                 .foregroundStyle(DS.text).frame(width: 48, alignment: .trailing)
         }
     }
@@ -555,7 +555,7 @@ struct StripView: View {
             VStack(alignment: .leading, spacing: 9) {
                 HStack(spacing: 7) {
                     Text("IN \(index + 1)")
-                        .font(.system(size: 9, weight: .bold))
+                        .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(live ? DS.text : DS.textDim)
                     if live && strip.gate {
                         GateLamp(meters: model.meters, index: index)
@@ -618,7 +618,7 @@ struct StripView: View {
                     }
                 }
                 if !strip.error.isEmpty {
-                    Text(strip.error).font(.system(size: 10, weight: .medium))
+                    Text(strip.error).font(.system(size: 11, weight: .medium))
                         .foregroundStyle(DS.fault).fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -628,7 +628,7 @@ struct StripView: View {
     @ViewBuilder private var midiControls: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 6) {
-                Text("SRC").font(.system(size: 9, weight: .bold)).foregroundStyle(DS.textDim)
+                Text("SRC").font(.system(size: 10, weight: .bold)).foregroundStyle(DS.textDim)
                 Picker("", selection: Binding(
                     get: { strip.midiSourceUID },
                     set: { model.setMidiSource(index, uid: $0) })) {
@@ -639,7 +639,7 @@ struct StripView: View {
             }
 
             HStack(spacing: 6) {
-                Text("INST").font(.system(size: 9, weight: .bold)).foregroundStyle(DS.textDim)
+                Text("INST").font(.system(size: 10, weight: .bold)).foregroundStyle(DS.textDim)
                 Picker("", selection: Binding(
                     get: { strip.program },
                     set: { model.setProgram(index, program: $0) })) {
@@ -657,16 +657,16 @@ struct StripView: View {
                 }
                 if strip.keyboard {
                     Text("OCT \(strip.octave)")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
                         .foregroundStyle(DS.glow)
                     Text("Z / X")
-                        .font(.system(size: 8, weight: .medium))
+                        .font(.system(size: 9, weight: .medium))
                         .foregroundStyle(DS.textDim)
                 }
                 Spacer()
                 if strip.notes > 0 {
                     Text("\(strip.notes)")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
                         .foregroundStyle(DS.glowLit)
                 }
                 StateButton(label: "Panic", on: false, faultTint: true) { model.panic(index) }
@@ -817,7 +817,7 @@ struct ContentView: View {
                     HStack {
                         Spacer()
                         Text("MICROPHONE ACCESS DENIED")
-                            .font(.system(size: 9, weight: .bold))
+                            .font(.system(size: 10, weight: .bold))
                             .foregroundStyle(DS.fault)
                     }
                 }
@@ -829,10 +829,10 @@ struct ContentView: View {
                 VStack(spacing: 9) {
                     ForEach(0..<4, id: \.self) { StripView(model: model, index: $0) }
                 }
-                .frame(width: 336)
+                .frame(width: 358)
 
                 VStack(alignment: .leading, spacing: 9) {
-                    Text("OUTPUTS").font(.system(size: 9, weight: .bold))
+                    Text("OUTPUTS").font(.system(size: 10, weight: .bold))
                         .foregroundStyle(DS.textDim)
 
                     ForEach(0..<4, id: \.self) { b in
@@ -841,7 +841,7 @@ struct ContentView: View {
                             VStack(alignment: .leading, spacing: 5) {
                                 HStack(spacing: 7) {
                                     Text(BUS_NAMES[b])
-                                        .font(.system(size: 11, weight: .bold))
+                                        .font(.system(size: 12, weight: .bold))
                                         .frame(width: 18, height: 18)
                                         .background(RoundedRectangle(cornerRadius: 4, style: .continuous)
                                             .fill(on ? DS.glowDeep.opacity(0.95) : Color.white.opacity(0.055)))
@@ -856,12 +856,12 @@ struct ContentView: View {
                                 }
                                 if on && !model.buses[b].detail.isEmpty {
                                     Text(model.buses[b].detail)
-                                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                        .font(.system(size: 10, weight: .medium, design: .monospaced))
                                         .foregroundStyle(DS.textDim)
                                 }
                                 if !model.buses[b].error.isEmpty {
                                     Text(model.buses[b].error)
-                                        .font(.system(size: 10, weight: .medium))
+                                        .font(.system(size: 11, weight: .medium))
                                         .foregroundStyle(DS.fault)
                                         .fixedSize(horizontal: false, vertical: true)
             .padding(.bottom, TitleBar.belowTitle)
@@ -871,16 +871,16 @@ struct ContentView: View {
                     }
                     Spacer()
                 }
-                .frame(width: 246)
+                .frame(width: 262)
             }
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 16)
         .padding(.top, TitleBar.titleTop)
-        // 336 (strips) + 246 (outputs) + 13 (gap) + 32 (padding). Pinned so the
+        // 358 (strips) + 262 (outputs) + 13 (gap) + 32 (padding). Pinned so the
         // header's unbounded Spacer cannot make the content width indeterminate
         // under .windowResizability(.contentSize).
-        .frame(width: 627, alignment: .leading)
+        .frame(width: 665, alignment: .leading)
         .background(
             LinearGradient(colors: [DS.bgTop, DS.bgMid, DS.bgBottom],
                            startPoint: .top, endPoint: .bottom)
