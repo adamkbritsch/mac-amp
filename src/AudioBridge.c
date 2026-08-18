@@ -10,10 +10,19 @@
 #include <pthread.h>
 #include <unistd.h>
 
-#define MA_BUFFER_FRAMES   256u
+#define MA_BUFFER_FRAMES   128u
 #define MA_MAX_SLICE       4096u
 #define MA_RING_FRAMES     16384u
-#define MA_TARGET_FILL     512u
+// The ring backlog is no longer a fixed guess. Each bus starts at the floor and
+// raises its own target only when it actually starves, then creeps back down
+// when it has been clean for a while -- so it settles at the lowest value this
+// machine can hold under whatever else is running, instead of a number chosen
+// for the worst case.
+#define MA_TARGET_MIN      96u
+#define MA_TARGET_MAX      3072u
+#define MA_TARGET_BUMP     128u     // added on a starve
+#define MA_TARGET_DECAY    16u      // removed after a clean stretch
+#define MA_CLEAN_SLICES    1200u    // ~3 s of clean 128-frame slices at 48k
 #define MA_DRIFT_GAIN      2.0e-6
 #define MA_DRIFT_MAX       0.002
 
@@ -71,6 +80,8 @@ typedef struct {
     _Atomic uint32_t fill;
     _Atomic int      active;
     _Atomic int      primed;   // set once the bus has mixed a full slice
+    _Atomic uint32_t target;   // adaptive ring backlog, in frames
+    _Atomic uint32_t cleanRun; // consecutive slices without a starve
 } OutputBus;
 
 struct MacAmpEngine {
@@ -204,7 +215,8 @@ static OSStatus outputProc(void *ref, AudioUnitRenderActionFlags *flags,
 
         if (!listening) {
             uint32_t a = rb_available(&s->ring, (uint32_t)bus);
-            if (a > MA_TARGET_FILL) rb_advance(&s->ring, (uint32_t)bus, a - MA_TARGET_FILL);
+            uint32_t t = atomic_load_explicit(&o->target, memory_order_relaxed);
+            if (a > t) rb_advance(&s->ring, (uint32_t)bus, a - t);
             o->phase[i] = 0.0;
             continue;
         }
@@ -213,10 +225,11 @@ static OSStatus outputProc(void *ref, AudioUnitRenderActionFlags *flags,
         if (avail < minFill) minFill = avail;
 
         double phase = o->phase[i];
+        const uint32_t target = atomic_load_explicit(&o->target, memory_order_relaxed);
 
         // Per (input, bus) drift control: this bus's backlog on this input
         // steers this pair's resample ratio, independently of every other pair.
-        double err  = (double)avail - (double)MA_TARGET_FILL;
+        double err  = (double)avail - (double)target;
         double corr = 1.0 + err * MA_DRIFT_GAIN;
         if (corr >  1.0 + MA_DRIFT_MAX) corr = 1.0 + MA_DRIFT_MAX;
         if (corr <  1.0 - MA_DRIFT_MAX) corr = 1.0 - MA_DRIFT_MAX;
@@ -274,6 +287,25 @@ static OSStatus outputProc(void *ref, AudioUnitRenderActionFlags *flags,
         atomic_store_explicit(&o->primed, 1, memory_order_relaxed);
     else if (starved && atomic_load_explicit(&o->primed, memory_order_relaxed))
         atomic_fetch_add_explicit(&o->underruns, 1, memory_order_relaxed);
+
+    // Adapt the backlog. Rise fast on a starve, fall slowly when clean: getting
+    // it wrong upwards costs a few milliseconds, getting it wrong downwards
+    // costs an audible dropout.
+    uint32_t t = atomic_load_explicit(&o->target, memory_order_relaxed);
+    if (starved && atomic_load_explicit(&o->primed, memory_order_relaxed)) {
+        uint32_t nt = t + MA_TARGET_BUMP;
+        if (nt > MA_TARGET_MAX) nt = MA_TARGET_MAX;
+        atomic_store_explicit(&o->target, nt, memory_order_relaxed);
+        atomic_store_explicit(&o->cleanRun, 0, memory_order_relaxed);
+    } else {
+        uint32_t cr = atomic_load_explicit(&o->cleanRun, memory_order_relaxed) + 1;
+        if (cr >= MA_CLEAN_SLICES) {
+            uint32_t nt = t > MA_TARGET_MIN + MA_TARGET_DECAY ? t - MA_TARGET_DECAY : MA_TARGET_MIN;
+            atomic_store_explicit(&o->target, nt, memory_order_relaxed);
+            cr = 0;
+        }
+        atomic_store_explicit(&o->cleanRun, cr, memory_order_relaxed);
+    }
     atomic_store_explicit(&o->fill, minFill == 0xFFFFFFFFu ? 0 : minFill, memory_order_relaxed);
 
     for (UInt32 b = 2; b < ioData->mNumberBuffers; b++)
@@ -590,6 +622,8 @@ int macamp_set_output(MacAmpEngine *e, int bus, AudioDeviceID dev, char *err, si
 
     atomic_store_explicit(&o->underruns, 0, memory_order_relaxed);
     atomic_store_explicit(&o->primed, 0, memory_order_relaxed);
+    atomic_store_explicit(&o->target, MA_TARGET_MIN, memory_order_relaxed);
+    atomic_store_explicit(&o->cleanRun, 0, memory_order_relaxed);
     atomic_store_explicit(&o->active, 1, memory_order_release);
 
     for (int i = 0; i < MA_MAX_INPUTS; i++) {
