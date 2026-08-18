@@ -49,13 +49,26 @@ not a click.
 
 ## Build
 
-Requires only Command Line Tools — no Xcode.
-
 ```bash
 ./build.sh
 ```
 
+Swift and C compile against Command Line Tools alone — no `xcodebuild`.
 Compiles are `nice`d so they yield to the window server.
+
+The icon is the one exception: `MacAmp.icon` is an Icon Composer bundle, and
+compiling it needs `actool`, which ships with full Xcode rather than Command
+Line Tools. Because `xcode-select` here points at Command Line Tools, `xcrun`
+will not find it, so `build.sh` falls back to the absolute path inside
+`Xcode.app`. The `.icon` is passed to `actool` **directly** — not wrapped in an
+`.xcassets`.
+
+`actool` emits two things into `Contents/Resources`: an `Assets.car` carrying
+the full glass treatment, and a thin `MacAmp.icns` holding only the 16pt and
+128pt sizes as a legacy fallback. On macOS 26 the Dock resolves the icon
+through `CFBundleIconName`, so that key — not `CFBundleIconFile` — is the
+load-bearing one. Without Xcode present the build still succeeds and simply
+warns that the app will have no icon.
 
 ## Permissions
 

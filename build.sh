@@ -40,6 +40,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key>       <true/>
   <key>NSPrincipalClass</key>              <string>NSApplication</string>
   <key>LSApplicationCategoryType</key>     <string>public.app-category.music</string>
+  <key>CFBundleIconFile</key>              <string>$APP_NAME</string>
+  <key>CFBundleIconName</key>              <string>$APP_NAME</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>MacAmp needs audio input access to route your guitar interface to your speakers.</string>
 </dict>
@@ -48,14 +50,14 @@ PLIST
 
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
-echo "[1/3] compiling C (realtime path)"
+echo "[1/4] compiling C (realtime path)"
 for c in RingBuffer AudioBridge; do
   $NICE clang -c -O2 -fno-objc-arc \
     -target "$TARGET" -isysroot "$SDK" \
     -o "$OUT/obj/$c.o" "$SRC/$c.c"
 done
 
-echo "[2/3] compiling Swift (UI + device layer)"
+echo "[2/4] compiling Swift (UI + device layer)"
 $NICE swiftc \
   -target "$TARGET" -sdk "$SDK" \
   -parse-as-library -O \
@@ -66,7 +68,29 @@ $NICE swiftc \
   "$OUT/obj/RingBuffer.o" "$OUT/obj/AudioBridge.o" \
   -o "$APP/Contents/MacOS/$APP_NAME"
 
-echo "[3/3] signing"
+echo "[3/4] compiling icon"
+# actool ships with full Xcode, not Command Line Tools, so xcrun (which follows
+# xcode-select -> CommandLineTools here) will not find it. Fall back explicitly.
+ACTOOL="$(xcrun --find actool 2>/dev/null || true)"
+[ -x "$ACTOOL" ] || ACTOOL="/Applications/Xcode.app/Contents/Developer/usr/bin/actool"
+
+if [ -x "$ACTOOL" ] && [ -d "$HERE/$APP_NAME.icon" ]; then
+  # The .icon is passed DIRECTLY -- not wrapped in an .xcassets.
+  "$ACTOOL" "$HERE/$APP_NAME.icon" \
+    --compile "$APP/Contents/Resources" \
+    --app-icon "$APP_NAME" \
+    --output-partial-info-plist "$OUT/icon-partial.plist" \
+    --platform macosx \
+    --minimum-deployment-target 26.0 \
+    --target-device mac \
+    --enable-on-demand-resources NO \
+    --output-format human-readable-text > "$OUT/actool.log" 2>&1
+  echo "  Assets.car + $APP_NAME.icns -> Contents/Resources"
+else
+  echo "  WARNING: actool not found or $APP_NAME.icon missing; app will have no icon"
+fi
+
+echo "[4/4] signing"
 cat > "$OUT/entitlements.plist" <<ENT
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
