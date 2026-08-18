@@ -453,6 +453,72 @@ struct StripView: View {
     }
 }
 
+// MARK: - Traffic lights
+
+/// Nudges the three window buttons down without touching anything else.
+///
+/// The usual trick for this is an empty NSTitlebarAccessoryViewController,
+/// which makes the title bar taller and lets AppKit re-centre the buttons in
+/// it -- but a taller title bar also insets the content, moving the whole
+/// window's layout. Offsetting the buttons directly leaves the content exactly
+/// where it is, which is the point.
+///
+/// AppKit restores the default frames on some relayouts, so this reapplies on
+/// key/resize rather than setting it once.
+struct TrafficLightOffset: NSViewRepresentable {
+    let dy: CGFloat
+
+    final class Coordinator {
+        var dy: CGFloat = 0
+        var observers: [NSObjectProtocol] = []
+        deinit { observers.forEach { NotificationCenter.default.removeObserver($0) } }
+
+        func apply(_ window: NSWindow?) {
+            guard let window else { return }
+            for type in [NSWindow.ButtonType.closeButton,
+                         .miniaturizeButton,
+                         .zoomButton] {
+                guard let button = window.standardWindowButton(type),
+                      let container = button.superview else { continue }
+                // Titlebar coords run bottom-up, so lowering the button means
+                // a smaller y. Measured from the top so repeated calls are
+                // idempotent rather than cumulative.
+                let top = container.bounds.height - button.frame.height
+                button.setFrameOrigin(NSPoint(x: button.frame.origin.x,
+                                              y: top - dy))
+            }
+        }
+
+        func attach(to window: NSWindow?) {
+            guard let window, observers.isEmpty else { apply(window); return }
+            let nc = NotificationCenter.default
+            for name in [NSWindow.didBecomeKeyNotification,
+                         NSWindow.didResizeNotification,
+                         NSWindow.didExitFullScreenNotification] {
+                observers.append(nc.addObserver(forName: name, object: window,
+                                                queue: .main) { [weak self] _ in
+                    self?.apply(window)
+                })
+            }
+            apply(window)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView(frame: .zero)
+        context.coordinator.dy = dy
+        DispatchQueue.main.async { context.coordinator.attach(to: v.window) }
+        return v
+    }
+
+    func updateNSView(_ v: NSView, context: Context) {
+        context.coordinator.dy = dy
+        DispatchQueue.main.async { context.coordinator.apply(v.window) }
+    }
+}
+
 // MARK: - Root
 
 struct ContentView: View {
@@ -538,6 +604,7 @@ struct ContentView: View {
             LinearGradient(colors: [DS.bgTop, DS.bgMid, DS.bgBottom],
                            startPoint: .top, endPoint: .bottom)
         )
+        .background(TrafficLightOffset(dy: 7).frame(width: 0, height: 0))
         .preferredColorScheme(.dark)
     }
 }
