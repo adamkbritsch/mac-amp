@@ -531,10 +531,12 @@ struct ContentView: View {
             // remaining space -- a ZStack, not an HStack with Spacers, so the
             // fault text appearing on the right cannot shove it off-centre.
             ZStack {
-                Text("MacAmp")
-                    .font(.system(size: 13, weight: .semibold))
+                // Concatenated Text runs, so "Amp" carries its own italic while
+                // the gradient still sweeps across the wordmark as one object.
+                (Text("Mac").font(.system(size: 18, weight: .semibold))
+                 + Text("Amp").font(.system(size: 18, weight: .semibold)).italic())
                     .foregroundStyle(DS.wordmark)
-                    .tracking(0.4)
+                    .tracking(0.3)
                 if model.permissionDenied {
                     HStack {
                         Spacer()
@@ -544,7 +546,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .frame(height: 22)
+            .frame(height: 26)
 
             HStack(alignment: .top, spacing: 13) {
                 VStack(spacing: 9) {
