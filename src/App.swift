@@ -18,6 +18,11 @@ final class MacAmpModel: ObservableObject {
 
     @Published var inputs:  [AudioDevice] = []
     @Published var outputs: [AudioDevice] = []
+
+    /// Outputs minus the device already chosen as input. Many USB interfaces —
+    /// the Amphonix among them — advertise both input and output endpoints, but
+    /// routing a device back into itself is a self-loop, never a valid choice.
+    var availableOutputs: [AudioDevice] { outputs.filter { $0.uid != selectedInputUID } }
     @Published var selectedInputUID:  String = "" { didSet { persistAndRestart() } }
     @Published var selectedOutputUID: String = "" { didSet { persistAndRestart() } }
     @Published private(set) var status: Status = .idle
@@ -70,7 +75,7 @@ final class MacAmpModel: ObservableObject {
         if selectedInputUID.isEmpty || !inputs.contains(where: { $0.uid == selectedInputUID }) {
             selectedInputUID = preferredInput()
         }
-        if selectedOutputUID.isEmpty || !outputs.contains(where: { $0.uid == selectedOutputUID }) {
+        if selectedOutputUID.isEmpty || !availableOutputs.contains(where: { $0.uid == selectedOutputUID }) {
             selectedOutputUID = preferredOutput()
         }
         suppressRestart = false
@@ -98,24 +103,34 @@ final class MacAmpModel: ObservableObject {
     }
 
     private func preferredOutput() -> String {
+        let candidates = availableOutputs
         if let saved = UserDefaults.standard.string(forKey: kOut),
-           let d = outputs.first(where: { $0.uid == saved }) { return d.uid }
+           let d = candidates.first(where: { $0.uid == saved }) { return d.uid }
         // Default to the built-in speakers rather than the system default: a
         // virtual driver holding "default output" would otherwise capture this.
-        if let spk = outputs.first(where: { $0.name.localizedCaseInsensitiveContains("MacBook Pro Speakers") }) {
+        if let spk = candidates.first(where: { $0.name.localizedCaseInsensitiveContains("MacBook Pro Speakers") }) {
             return spk.uid
         }
         let def = DeviceQuery.defaultDevice(input: false)
-        return outputs.first(where: { $0.id == def })?.uid ?? outputs.first?.uid ?? ""
+        return candidates.first(where: { $0.id == def })?.uid ?? candidates.first?.uid ?? ""
     }
 
     private func resolvedInput()  -> AudioDevice? { inputs.first  { $0.uid == selectedInputUID } }
-    private func resolvedOutput() -> AudioDevice? { outputs.first { $0.uid == selectedOutputUID } }
+    private func resolvedOutput() -> AudioDevice? { availableOutputs.first { $0.uid == selectedOutputUID } }
 
     // MARK: Engine
 
     private func persistAndRestart() {
         guard !suppressRestart else { return }
+
+        // Choosing an input that was serving as the output strands the output
+        // selection, since it is now filtered out. Re-pick before starting.
+        if !availableOutputs.contains(where: { $0.uid == selectedOutputUID }) {
+            suppressRestart = true
+            selectedOutputUID = preferredOutput()
+            suppressRestart = false
+        }
+
         UserDefaults.standard.set(selectedInputUID,  forKey: kIn)
         UserDefaults.standard.set(selectedOutputUID, forKey: kOut)
         if AVCaptureDevice.authorizationStatus(for: .audio) == .authorized { start() }
@@ -125,6 +140,10 @@ final class MacAmpModel: ObservableObject {
         guard let engine else { status = .failed("Audio engine unavailable"); return }
         guard let i = resolvedInput()  else { status = .deviceMissing("Input device unavailable");  return }
         guard let o = resolvedOutput() else { status = .deviceMissing("Output device unavailable"); return }
+        guard i.id != o.id else {
+            status = .failed("Input and output cannot be the same device.")
+            return
+        }
 
         var buf = [CChar](repeating: 0, count: 512)
         let rc = macamp_start(engine, i.id, o.id, &buf, 512)
@@ -165,7 +184,7 @@ struct ContentView: View {
             header
 
             picker("Input", devices: model.inputs, selection: $model.selectedInputUID)
-            picker("Output", devices: model.outputs, selection: $model.selectedOutputUID)
+            picker("Output", devices: model.availableOutputs, selection: $model.selectedOutputUID)
 
             Divider()
             statusLine

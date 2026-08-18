@@ -71,3 +71,9 @@ and says so instead of appearing to work while playing nothing.
 - Output defaults to the built-in speakers rather than the system default,
   since a virtual audio driver holding "default output" would otherwise
   silently capture the signal.
+- Many USB interfaces advertise both input and output endpoints — the
+  Amphonix reports `in=2 out=2`, its output existing so backing tracks can be
+  played into the amp. The output list therefore excludes whichever device is
+  selected as input, because routing a device into itself is a self-loop. The
+  engine also refuses it outright, so a stale saved selection cannot slip past
+  the UI filter.
