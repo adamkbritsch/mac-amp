@@ -4,12 +4,13 @@
 
 <h1 align="center">MacAmp</h1>
 
-A guitar amp for your Mac, in the narrow sense that matters: it takes the audio
-coming in from a USB interface and plays it out of a **different** device, live
-and continuously, so you can plug in and hear yourself without opening a DAW.
+A small live mixer for macOS. Plug in a guitar and a microphone, and route each
+of them to any combination of output devices — the same one, different ones,
+several at once — with per-source gain, pan, mute, solo, a noise gate and
+metering. All live, all without opening a DAW.
 
-It does exactly one thing. Two dropdowns, one status line. The tone is your
-hardware's business — MacAmp only does the part macOS itself refuses to.
+Four inputs, four output buses, a routing matrix, and nothing else. The tone is
+your hardware's business — MacAmp only does the part macOS itself refuses to.
 
 > A personal project, built for a Sonicake Amphonix 2 going into a MacBook Pro.
 > Nothing about it is specific to that amp; any class-compliant USB audio input
@@ -58,23 +59,25 @@ virtual device, and nothing to configure — because when the answer is always
 ## How it fits together
 
 ```
-   guitar ──▶ Amphonix 2 ──USB Audio 2.0──▶ ┌──────────────────────────┐
-                44,100 Hz                   │  input AUHAL             │
-              (tone happens here)           │         ▼                │
-                                            │  lock-free ring buffer   │
-                                            │         ▼                │
-                                            │  drift-corrected resample│
-                                            │         ▼                │
-                                            │  output AUHAL            │
-                                            └────────────┬─────────────┘
-                                                         ▼  48,000 Hz
-                                               MacBook Pro Speakers
+  guitar ─▶ interface ─┐                                    ┌─▶ bus A ─▶ speakers
+             44,100 Hz │   gate ▸ gain ▸ meter ▸ ring       │      48,000 Hz
+                       ├──────────────────────────────┐     │
+                       │                         routing    │
+   mic ─▶ interface ─┐ │                          matrix ───┤
+             48,000 Hz │   gate ▸ gain ▸ meter ▸ ring       │
+                       └──────────────────────────────┘     └─▶ bus B ─▶ headphones
+                                                                   44,100 Hz
 ```
+
+Every input owns a ring buffer. Every output bus owns an independent read cursor
+and resample phase **into each of those rings** — so one guitar can feed two
+buses running at different rates off different clocks, each drift-corrected
+separately, while a mic on a third clock is summed into one of them.
 
 | File | Language | Role |
 |---|---|---|
-| `src/RingBuffer.c` | C | Lock-free SPSC ring, C11 atomics with acquire/release pairing |
-| `src/AudioBridge.c` | C | Both AUHAL units, both render callbacks, the resampler |
+| `src/RingBuffer.c` | C | Lock-free ring, one producer and up to four independent consumers |
+| `src/AudioBridge.c` | C | Every AUHAL unit, every render callback, gate, pan, mixing, resampling |
 | `src/Devices.swift` | Swift | Enumeration, UID persistence, hot-plug watching |
 | `src/App.swift` | Swift | The window: two pickers and a status line |
 
@@ -122,51 +125,74 @@ and tells you.
 
 ## What it does
 
-- **Routes one device to another, continuously.** That is the feature.
-- **Remembers your choice by device UID**, never by `AudioDeviceID` — those get
-  reassigned across reboots, so an app that persists the number reopens pointing
-  at whatever inherited it.
+- **Four inputs, four output buses, any routing between them.** Send the guitar
+  to the speakers and the mic to headphones; send both to both; solo one to
+  check it. Each input carries gain, pan, mute, solo and a noise gate.
+- **Mixes sources that do not share a clock.** A guitar interface at 44.1 kHz
+  and a mic at 48 kHz are two independent crystals, and summing them means
+  resampling each against the destination separately.
+- **Metering that reads like audio.** Peak is captured on the audio thread and
+  cleared on read, so a transient between UI frames cannot be missed, and the
+  scale is dBFS across the top 60 dB rather than linear.
+- **A noise gate per input**, with fast attack so a note's transient survives
+  and slow release so it does not chatter on a decay. Useful on a mic in a room
+  with a fan; useful on a high-gain amp patch that hisses.
+- **Remembers everything by device UID**, never by `AudioDeviceID` — those get
+  reassigned across reboots, so an app that persists the number reopens
+  pointing at whatever inherited it.
 - **Defaults output to the built-in speakers** rather than the system default.
-  A virtual audio driver that has installed itself as "default output" —
-  Boom 3D, Teams, Steam, a Multi-Output Device — would otherwise swallow the
-  signal silently.
-- **Survives unplugging.** Pull the interface mid-session and it says so; plug
-  it back in and it resumes on its own.
+  A virtual driver that has installed itself as "default output" — Boom 3D,
+  Teams, Steam, a Multi-Output Device — would otherwise swallow the signal.
 - **Refuses to route a device into itself.** Many USB interfaces advertise both
-  input and output endpoints — the Amphonix reports `in=2 out=2`, its output
-  existing so backing tracks can be played into the amp — so it is a legitimate
-  output device that is nonetheless never a valid destination here. It is
-  filtered from the output list, and the engine refuses it outright in case a
-  stale saved selection gets that far.
+  input and output endpoints, so they are legitimate output devices that are
+  nonetheless never valid destinations here.
+- **Survives unplugging.** Pull an interface and its strip empties; plug it back
+  in and it returns.
 
 ### Clock drift
 
-The two devices run on independent crystals. At ±50 ppm each they can diverge by
-up to 100 ppm — about **4.4 samples per second at 44.1 kHz, roughly 6 ms per
-minute.** Left alone, the ring buffer drains or overflows within minutes and the
-audio dies partway through a practice session.
+The devices run on independent crystals. At ±50 ppm each they can diverge by up
+to 100 ppm — about **4.4 samples per second at 44.1 kHz, roughly 6 ms per
+minute.** Left alone, a ring buffer drains or overflows within minutes and the
+audio dies partway through a session.
 
-So the output callback low-pass filters the ring's fill level and nudges the
-resample ratio to hold a target backlog, clamped to **±0.2%** — well under the
-~0.6% where pitch change becomes audible. Interpolation is cubic Hermite:
-transparent when the two devices sit at the same rate, and materially cleaner
-than linear when they do not. Underruns fade to silence rather than cutting
-hard, so a glitch is a dip and not a click.
+So each output bus low-pass filters its backlog on each input it is reading and
+nudges that pair's resample ratio, clamped to **±0.2%** — well under the ~0.6%
+where pitch change becomes audible. Interpolation is cubic Hermite: transparent
+at matched rates, materially cleaner than linear otherwise.
 
-If your input and output are both capable of 44.1 kHz, matching them in **Audio
-MIDI Setup** removes the rate conversion entirely and leaves the resampler doing
-nothing but drift correction. MacAmp will not do this for you — a device's
-nominal sample rate is shared state that every other app on the machine sees.
+Two details that only matter once there is more than one consumer:
+
+- The producer paces to the **furthest-behind** cursor, not the nearest, or a
+  momentarily starved bus would have samples overwritten underneath it.
+- A bus parked on an input it is **not currently listening to** — unrouted,
+  muted, soloed out — still advances its cursor. Otherwise that idle bus would
+  stall the ring for every other bus reading the same input.
+
+If two devices can both reach 44.1 kHz, matching them in **Audio MIDI Setup**
+removes the rate conversion entirely. MacAmp will not do this for you: a
+device's nominal rate is shared state every other app on the machine sees.
+
+### Feedback
+
+A microphone routed to speakers is a feedback loop. MacAmp does not attempt to
+detect or suppress it — there is no automatic notch or ducking — so mute is a
+real control rather than a convenience. Summed buses are hard-limited at full
+scale, which stops a runaway from wrapping into digital noise, but it will still
+be loud. Use headphones for mic work.
 
 ### One thing it deliberately does not do
 
-**There is no EQ, no gain, no metering, no effects, and no volume slider.**
+**There is no EQ and there are no effects.**
 
-Not because they are hard — the gain is about ten lines — but because a modelling
-amp already has them, in hardware, with its own editor. A second tone stage in
-software would mean dialling in a sound on the amp and then having it altered on
-the way out by a control you forgot you set. The signal arrives shaped and leaves
-unshaped, and the only question the app asks is where to put it.
+Not because they are hard, but because a modelling amp already has them, in
+hardware, with its own editor. A second tone stage in software would mean
+dialling in a sound on the amp and having it altered on the way out by a control
+you forgot you set. Gain, pan and the gate exist because a mixer cannot balance
+two sources without them. Tone shaping is a different job.
+
+It also does not stream or encode. LadioCast's Icecast/RTMP/SHOUTcast half is
+broadcast plumbing, and this is not a broadcast tool.
 
 ## Credits
 
