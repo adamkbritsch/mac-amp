@@ -238,6 +238,24 @@ If two devices can both reach 44.1 kHz, matching them in **Audio MIDI Setup**
 removes the rate conversion entirely. MacAmp will not do this for you: a
 device's nominal rate is shared state every other app on the machine sees.
 
+### Latency
+
+Round trip is device buffers plus ring backlog. Buffers are 128 frames a side,
+about 5.5 ms at these rates, and the backlog **tunes itself**: each bus starts
+at a 96-frame floor and raises its own target only when it actually starves,
+creeping back down after a clean stretch. It rises in 128-frame steps and falls
+in 16-frame ones, because a few milliseconds too conservative is inaudible while
+one frame too aggressive is a dropout you hear.
+
+The floor is roughly **8 ms**, and each bus settles wherever this machine can
+actually hold under whatever else is running. The right backlog depends on
+system load, which no constant chosen at build time can know.
+
+This is not free. Halving the buffers doubles how often the render callbacks
+fire — measured CPU went from about 16% to about 34%. If you would rather have
+the CPU back than the milliseconds, raise `MA_BUFFER_FRAMES` in
+`src/AudioBridge.c`.
+
 ### Feedback
 
 A microphone routed to speakers is a feedback loop. MacAmp does not attempt to
