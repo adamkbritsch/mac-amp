@@ -135,20 +135,44 @@ final class MixerModel: ObservableObject {
         restoreIfNeeded()
     }
 
-    /// Output candidates for a bus: everything except devices currently in use
-    /// as an input, since routing a device into itself is a self-loop.
-    func outputCandidates() -> [AudioDevice] {
-        let usedAsInput = Set(strips.map(\.deviceUID).filter { !$0.isEmpty })
-        return outputs.filter { !usedAsInput.contains($0.uid) }
+    /// Every output device, including ones also serving as an input.
+    ///
+    /// A bidirectional interface's USB playback lands on its own aux/headphone
+    /// jack, which is a real destination: send a microphone or a MIDI
+    /// instrument there and you hear it in the headphones plugged into the amp.
+    func outputCandidates() -> [AudioDevice] { outputs }
+
+    /// True when this device is also feeding one of the input strips.
+    func isAlsoAnInput(_ uid: String) -> Bool {
+        strips.contains { $0.deviceUID == uid && !$0.isMidi }
     }
 
-    /// Input candidates for a strip: exclude devices already used by another
-    /// strip, and anything serving as an output bus.
+    /// Names a bus destination, marking the case where playback returns to a
+    /// device we are also capturing from.
+    func outputLabel(_ d: AudioDevice) -> String {
+        isAlsoAnInput(d.uid) ? "\(d.name) — aux out" : d.name
+    }
+
+    /// Sending a strip back to the very device it is captured from means hearing
+    /// it twice: once direct in the hardware, once round-tripped through the
+    /// Mac a few milliseconds later. Worth flagging rather than preventing --
+    /// it is exactly what you want for a *different* source.
+    func echoWarning(_ slot: Int) -> String? {
+        let s = strips[slot]
+        guard !s.isMidi, !s.deviceUID.isEmpty else { return nil }
+        for b in 0..<4 where s.routes[b] && buses[b].deviceUID == s.deviceUID {
+            return "Routed back to its own aux out — you will hear it twice."
+        }
+        return nil
+    }
+
+    /// Input candidates for a strip: only exclude devices another strip already
+    /// holds. A device serving as an output bus is still a valid input -- that
+    /// is the whole point of a bidirectional interface.
     func inputCandidates(for slot: Int) -> [AudioDevice] {
         let takenByOtherStrip = Set(strips.enumerated()
             .filter { $0.offset != slot }.map { $0.element.deviceUID }.filter { !$0.isEmpty })
-        let usedAsOutput = Set(buses.map(\.deviceUID).filter { !$0.isEmpty })
-        return inputs.filter { !takenByOtherStrip.contains($0.uid) && !usedAsOutput.contains($0.uid) }
+        return inputs.filter { !takenByOtherStrip.contains($0.uid) }
     }
 
     // MARK: Engine wiring
@@ -742,6 +766,9 @@ struct StripView: View {
                 if !strip.error.isEmpty {
                     Text(strip.error).font(.system(size: 11, weight: .medium))
                         .foregroundStyle(DS.fault).fixedSize(horizontal: false, vertical: true)
+                } else if let echo = model.echoWarning(index) {
+                    Text(echo).font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(DS.glow).fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -1008,7 +1035,9 @@ struct ContentView: View {
                                         get: { model.buses[b].deviceUID },
                                         set: { model.setOutput(b, uid: $0) })) {
                                         Text("None").tag("")
-                                        ForEach(model.outputCandidates()) { d in Text(d.name).tag(d.uid) }
+                                        ForEach(model.outputCandidates()) { d in
+                                            Text(model.outputLabel(d)).tag(d.uid)
+                                        }
                                     }
                                     .labelsHidden().pickerStyle(.menu).controlSize(.small)
                                 }

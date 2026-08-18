@@ -165,9 +165,18 @@ and tells you.
 - **Defaults output to the built-in speakers** rather than the system default.
   A virtual driver that has installed itself as "default output" — Boom 3D,
   Teams, Steam, a Multi-Output Device — would otherwise swallow the signal.
-- **Refuses to route a device into itself.** Many USB interfaces advertise both
-  input and output endpoints, so they are legitimate output devices that are
-  nonetheless never valid destinations here.
+- **Bidirectional interfaces work both ways.** Many USB interfaces advertise
+  input *and* output endpoints — the Amphonix reports `in=2 out=2` — and that
+  output is its aux/headphone jack. It is a real destination: send a microphone
+  or a MIDI instrument to it and you hear that source in the headphones plugged
+  into the amp, alongside your guitar. Such devices are labelled **"— aux out"**
+  in the bus list so it is clear where the sound lands.
+
+  Routing a strip back to the device it is *captured from* is allowed but
+  flagged: you would hear it twice, once directly in the hardware and once
+  round-tripped through the Mac a few milliseconds later. MacAmp says so on the
+  strip rather than preventing it, because the same routing is exactly right for
+  a different source.
 - **Survives unplugging.** Pull an interface and its strip empties; plug it back
   in and it returns.
 - **Stops your instrument stealing system audio.** macOS makes a newly connected
