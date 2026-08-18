@@ -60,6 +60,9 @@ final class MixerModel: ObservableObject {
     @Published var inputs:  [AudioDevice] = []
     @Published var outputs: [AudioDevice] = []
     @Published var midiSources: [MidiSource] = []
+    /// Local, per-endpoint display names. Controllers report things like
+    /// "USB MIDI Device", which is useless once you own two of them.
+    @Published var midiAliases: [MIDIUniqueID: String] = [:]
     @Published var permissionDenied = false
 
     private let engine: OpaquePointer? = macamp_create()
@@ -72,6 +75,7 @@ final class MixerModel: ObservableObject {
     private var keyboardSlot: Int?
 
     init() {
+        restoreAliases()
         refreshDevices()
         watcher.start { [weak self] in self?.refreshDevices() }
         // 30 Hz: fast enough that a meter reads as continuous, slow enough to
@@ -192,6 +196,45 @@ final class MixerModel: ObservableObject {
     // MARK: MIDI
 
     func refreshMidiSources() { midiSources = MidiQuery.sources() }
+
+    /// The alias if one is set, otherwise whatever CoreMIDI reports.
+    func displayName(_ src: MidiSource) -> String {
+        let a = midiAliases[src.id]?.trimmingCharacters(in: .whitespaces)
+        return (a?.isEmpty == false) ? a! : src.name
+    }
+
+    func displayName(forUID uid: MIDIUniqueID) -> String {
+        if let src = midiSources.first(where: { $0.id == uid }) { return displayName(src) }
+        let a = midiAliases[uid]?.trimmingCharacters(in: .whitespaces)
+        // A renamed device that is currently unplugged should still be
+        // recognisable rather than collapsing to a bare number.
+        return (a?.isEmpty == false) ? a! : "Unavailable"
+    }
+
+    /// An empty or whitespace-only name clears the alias rather than storing a
+    /// blank that would render as nothing.
+    func setAlias(_ uid: MIDIUniqueID, _ name: String) {
+        let t = name.trimmingCharacters(in: .whitespaces)
+        if t.isEmpty { midiAliases.removeValue(forKey: uid) } else { midiAliases[uid] = t }
+        persistAliases()
+    }
+
+    func originalName(_ uid: MIDIUniqueID) -> String {
+        midiSources.first(where: { $0.id == uid })?.name ?? "Unavailable"
+    }
+
+    private func persistAliases() {
+        // UserDefaults dictionaries need String keys.
+        let d = Dictionary(uniqueKeysWithValues: midiAliases.map { (String($0.key), $0.value) })
+        UserDefaults.standard.set(d, forKey: "midiAliases")
+    }
+
+    private func restoreAliases() {
+        guard let raw = UserDefaults.standard.dictionary(forKey: "midiAliases") as? [String: String] else { return }
+        midiAliases = Dictionary(uniqueKeysWithValues: raw.compactMap { k, v in
+            MIDIUniqueID(k).map { ($0, v) }
+        })
+    }
 
     private func attachReceiver(_ slot: Int) {
         let uid = strips[slot].midiSourceUID
@@ -547,7 +590,14 @@ private struct Row<Content: View>: View {
 struct StripView: View {
     @ObservedObject var model: MixerModel
     let index: Int
+    @State private var renaming = false
+    @State private var draftName = ""
     private var strip: MixerModel.Strip { model.strips[index] }
+
+    private func commitRename() {
+        model.setAlias(strip.midiSourceUID, draftName)
+        renaming = false
+    }
     private var live: Bool { !strip.deviceUID.isEmpty }
 
     var body: some View {
@@ -633,9 +683,33 @@ struct StripView: View {
                     get: { strip.midiSourceUID },
                     set: { model.setMidiSource(index, uid: $0) })) {
                     Text("None").tag(MIDIUniqueID(0))
-                    ForEach(model.midiSources) { src in Text(src.name).tag(src.id) }
+                    ForEach(model.midiSources) { src in Text(model.displayName(src)).tag(src.id) }
                 }
                 .labelsHidden().pickerStyle(.menu).controlSize(.mini)
+
+                if strip.midiSourceUID != 0 {
+                    StateButton(label: renaming ? "Done" : "Name", on: renaming) {
+                        if renaming { commitRename() }
+                        else {
+                            draftName = model.midiAliases[strip.midiSourceUID] ?? ""
+                            renaming = true
+                        }
+                    }
+                }
+            }
+
+            if renaming && strip.midiSourceUID != 0 {
+                HStack(spacing: 6) {
+                    TextField(model.originalName(strip.midiSourceUID), text: $draftName)
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.mini)
+                        .font(.system(size: 11))
+                        .onSubmit { commitRename() }
+                    // Clearing the field restores whatever CoreMIDI reports.
+                    StateButton(label: "Clear", on: false) {
+                        draftName = ""; commitRename()
+                    }
+                }
             }
 
             HStack(spacing: 6) {

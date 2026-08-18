@@ -208,6 +208,17 @@ gain, pan, mute, solo, gate, metering and routing all apply unchanged.
   a key while the window is not focused still sends its note-off, so nothing
   gets stranded on.
 - **Panic** silences every sounding note on the strip.
+- **Rename a source.** Controllers routinely report themselves as "USB MIDI
+  Device", which stops being useful the moment you own two. **Name** sets a
+  local label; clearing the field restores whatever CoreMIDI reports. The alias
+  is stored against the endpoint's unique ID, so it survives replugging and
+  reboots, and a renamed device that is currently unplugged still shows its
+  name rather than a bare number.
+
+  This is deliberately local to MacAmp. CoreMIDI does allow writing
+  `kMIDIPropertyName` on an endpoint — that is what Audio MIDI Setup does — but
+  that changes the name for every app on the machine, and MacAmp does not
+  quietly edit state it does not own.
 
 The synth runs at 48 kHz internally and is resampled to each bus exactly like a
 hardware input. Because it has no hardware clock, nothing paces it — a producer
