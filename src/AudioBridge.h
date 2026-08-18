@@ -21,6 +21,16 @@
 
 typedef struct MacAmpEngine MacAmpEngine;
 
+/// A strip is fed either by a hardware audio device or by a MIDI instrument.
+/// MIDI carries no audio of its own, so a MIDI strip owns a synthesiser
+/// (Apple's built-in DLS/General MIDI unit) and renders it into the same ring
+/// buffer an audio device would fill. Everything downstream -- gain, pan, gate,
+/// routing, metering, resampling -- is identical either way.
+typedef enum {
+    MA_SRC_AUDIO = 0,
+    MA_SRC_MIDI  = 1
+} MASourceKind;
+
 MacAmpEngine *macamp_create(void);
 void          macamp_destroy(MacAmpEngine *e);
 
@@ -33,6 +43,26 @@ int  macamp_set_output  (MacAmpEngine *e, int bus,  AudioDeviceID dev, char *err
 void macamp_clear_output(MacAmpEngine *e, int bus);
 
 int  macamp_input_active (const MacAmpEngine *e, int slot);
+MASourceKind macamp_input_kind(const MacAmpEngine *e, int slot);
+
+// ---- MIDI instrument strips ----------------------------------------------
+/// Turns a slot into a MIDI instrument. `sampleRate` is the synth's internal
+/// rate; buses at other rates are resampled exactly as for a hardware input.
+int  macamp_set_midi_input(MacAmpEngine *e, int slot, double sampleRate,
+                           char *err, size_t errLen);
+
+/// Raw MIDI, from a hardware endpoint or the computer keyboard alike.
+void macamp_midi_event(MacAmpEngine *e, int slot,
+                       unsigned char status, unsigned char d1, unsigned char d2);
+
+/// General MIDI program (0-127) on channel 0.
+void macamp_midi_program(MacAmpEngine *e, int slot, unsigned char program);
+
+/// Silences every sounding note -- the panic button for a stuck note-on.
+void macamp_midi_all_notes_off(MacAmpEngine *e, int slot);
+
+/// How many notes are currently held, for the UI.
+int  macamp_midi_active_notes(const MacAmpEngine *e, int slot);
 int  macamp_output_active(const MacAmpEngine *e, int bus);
 
 // ---- routing matrix ------------------------------------------------------

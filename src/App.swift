@@ -2,10 +2,27 @@ import SwiftUI
 import AppKit
 import AVFoundation
 import CoreAudio
+import CoreMIDI
 
 let BUS_NAMES = ["A", "B", "C", "D"]
 
+/// Selecting this in an input picker turns the strip into a MIDI instrument
+/// rather than binding it to a capture device.
+let MIDI_UID = "__macamp_midi__"
+
 // MARK: - Model
+
+/// Meter levels update 30 times a second. They are deliberately NOT stored on
+/// MixerModel: mutating a @Published property there invalidates every view
+/// observing the model, so the pickers, buttons and bus panels would all be
+/// rebuilt on every tick. Profiling showed that costing ~66% CPU. Keeping the
+/// fast-changing state on its own object means only the meter views redraw.
+@MainActor
+final class Meters: ObservableObject {
+    @Published var level = [Double](repeating: 0, count: 8)   // L,R interleaved per strip
+    func l(_ i: Int) -> Double { level[i * 2] }
+    func r(_ i: Int) -> Double { level[i * 2 + 1] }
+}
 
 @MainActor
 final class MixerModel: ObservableObject {
@@ -20,9 +37,15 @@ final class MixerModel: ObservableObject {
         var gate = false
         var gateThreshold: Double = -50
         var routes: [Bool] = [false, false, false, false]
-        var meterL: Double = 0
-        var meterR: Double = 0
         var error: String = ""
+
+        // MIDI instrument strips
+        var isMidi = false
+        var midiSourceUID: MIDIUniqueID = 0
+        var program: UInt8 = 0
+        var keyboard = false
+        var octave = 4
+        var notes = 0
     }
 
     struct Bus: Identifiable {
@@ -36,11 +59,17 @@ final class MixerModel: ObservableObject {
     @Published var buses:  [Bus]   = (0..<4).map { Bus(id: $0) }
     @Published var inputs:  [AudioDevice] = []
     @Published var outputs: [AudioDevice] = []
+    @Published var midiSources: [MidiSource] = []
     @Published var permissionDenied = false
 
     private let engine: OpaquePointer? = macamp_create()
     private let watcher = DeviceChangeWatcher()
     private var meterTimer: Timer?
+    let meters = Meters()
+    private var meterTick = 0
+    private var receivers: [MidiReceiver?] = [nil, nil, nil, nil]
+    private var keyboardMidi: KeyboardMidi?
+    private var keyboardSlot: Int?
 
     init() {
         refreshDevices()
@@ -74,6 +103,7 @@ final class MixerModel: ObservableObject {
     func refreshDevices() {
         inputs  = DeviceQuery.inputs()
         outputs = DeviceQuery.outputs()
+        midiSources = MidiQuery.sources()
         restoreIfNeeded()
     }
 
@@ -100,6 +130,25 @@ final class MixerModel: ObservableObject {
         strips[slot].error = ""
         guard let engine else { return }
 
+        if uid != MIDI_UID { teardownMidi(slot) }
+
+        if uid == MIDI_UID {
+            strips[slot].isMidi = true
+            var buf = [CChar](repeating: 0, count: 512)
+            // 48 kHz internally; buses at other rates resample exactly as they
+            // would for a hardware input.
+            let rc = macamp_set_midi_input(engine, Int32(slot), 48000, &buf, 512)
+            if rc != 0 {
+                strips[slot].error = String(cString: buf)
+            } else {
+                macamp_midi_program(engine, Int32(slot), strips[slot].program)
+                attachReceiver(slot)
+                if strips[slot].keyboard { enableKeyboard(slot) }
+            }
+            pushStrip(slot); persist(); return
+        }
+
+        strips[slot].isMidi = false
         guard !uid.isEmpty, let dev = inputs.first(where: { $0.uid == uid }) else {
             macamp_clear_input(engine, Int32(slot)); persist(); return
         }
@@ -140,23 +189,122 @@ final class MixerModel: ObservableObject {
         persist()
     }
 
+    // MARK: MIDI
+
+    func refreshMidiSources() { midiSources = MidiQuery.sources() }
+
+    private func attachReceiver(_ slot: Int) {
+        let uid = strips[slot].midiSourceUID
+        if receivers[slot] == nil {
+            receivers[slot] = MidiReceiver { [weak self] status, d1, d2 in
+                // CoreMIDI delivers on its own thread; the engine call is
+                // lock-free, but the @Published note count is main-actor state.
+                guard let self else { return }
+                if let e = self.engineRef { macamp_midi_event(e, Int32(slot), status, d1, d2) }
+                Task { @MainActor in
+                    self.strips[slot].notes = Int(macamp_midi_active_notes(self.engine, Int32(slot)))
+                }
+            }
+        }
+        receivers[slot]?.connect(uid: uid == 0 ? nil : uid)
+    }
+
+    private func teardownMidi(_ slot: Int) {
+        receivers[slot]?.connect(uid: nil)
+        receivers[slot] = nil
+        if keyboardSlot == slot { disableKeyboard() }
+        strips[slot].isMidi = false
+        strips[slot].notes = 0
+    }
+
+    func setMidiSource(_ slot: Int, uid: MIDIUniqueID) {
+        strips[slot].midiSourceUID = uid
+        attachReceiver(slot)
+        persist()
+    }
+
+    func setProgram(_ slot: Int, program: UInt8) {
+        strips[slot].program = program
+        if let engine { macamp_midi_program(engine, Int32(slot), program) }
+        persist()
+    }
+
+    /// Only one strip can own the computer keyboard, or a single keypress
+    /// would sound on several instruments at once.
+    func enableKeyboard(_ slot: Int) {
+        if let cur = keyboardSlot, cur != slot {
+            strips[cur].keyboard = false
+            keyboardMidi?.disable()
+        }
+        keyboardSlot = slot
+        strips[slot].keyboard = true
+        if keyboardMidi == nil {
+            keyboardMidi = KeyboardMidi { [weak self] status, d1, d2 in
+                guard let self, let s = self.keyboardSlot, let e = self.engineRef else { return }
+                macamp_midi_event(e, Int32(s), status, d1, d2)
+                Task { @MainActor in
+                    self.strips[s].notes = Int(macamp_midi_active_notes(self.engine, Int32(s)))
+                }
+            }
+        }
+        keyboardMidi?.octave = strips[slot].octave
+        keyboardMidi?.onOctaveChange = { [weak self] oct in
+            Task { @MainActor in
+                if let s = self?.keyboardSlot { self?.strips[s].octave = oct }
+            }
+        }
+        keyboardMidi?.enable()
+        persist()
+    }
+
+    func disableKeyboard() {
+        if let s = keyboardSlot { strips[s].keyboard = false }
+        keyboardMidi?.disable()
+        keyboardSlot = nil
+        persist()
+    }
+
+    func panic(_ slot: Int) {
+        keyboardMidi?.allNotesOff()
+        if let engine { macamp_midi_all_notes_off(engine, Int32(slot)) }
+        strips[slot].notes = 0
+    }
+
+    /// The engine pointer, reachable from non-main threads.
+    private var engineRef: OpaquePointer? { engine }
+
     private func pollMeters() {
         guard let engine else { return }
+
+        // Build the whole array, then assign once: eight separate writes would
+        // publish eight times.
+        var next = meters.level
+        var changed = false
         for i in 0..<4 {
             var l: Float = 0, r: Float = 0
             macamp_read_peaks(engine, Int32(i), &l, &r)
             // Instant attack, exponential release -- a peak must never be
             // missed, but the bar should fall smoothly rather than flicker.
-            strips[i].meterL = max(Double(l), strips[i].meterL * 0.82)
-            strips[i].meterR = max(Double(r), strips[i].meterR * 0.82)
+            let nl = max(Double(l), next[i * 2]     * 0.82)
+            let nr = max(Double(r), next[i * 2 + 1] * 0.82)
+            // Below this the bar cannot move a visible pixel, so publishing it
+            // would be pure invalidation for no visual change.
+            if abs(nl - next[i * 2])     > 0.002 { next[i * 2]     = nl; changed = true }
+            if abs(nr - next[i * 2 + 1]) > 0.002 { next[i * 2 + 1] = nr; changed = true }
         }
+        if changed { meters.level = next }
+
+        // Text readouts do not need 30 Hz; a quarter of a second is plenty and
+        // each update rebuilds the bus panels.
+        meterTick += 1
+        guard meterTick % 8 == 0 else { return }
         for b in 0..<4 where macamp_output_active(engine, Int32(b)) != 0 {
             let ms = macamp_latency_ms(engine, Int32(b))
             let un = macamp_underruns(engine, Int32(b))
             let sr = macamp_output_rate(engine, Int32(b))
             var d = String(format: "%.1f kHz · %.0f ms", sr / 1000, ms)
             if un > 0 { d += " · \(un) dropout\(un == 1 ? "" : "s")" }
-            buses[b].detail = d
+            if buses[b].detail != d { buses[b].detail = d }
         }
     }
 
@@ -172,6 +320,9 @@ final class MixerModel: ObservableObject {
             d.set(s.gate,      forKey: "in\(i).gate")
             d.set(s.gateThreshold, forKey: "in\(i).gateT")
             d.set(s.routes.map { $0 ? 1 : 0 }, forKey: "in\(i).routes")
+            d.set(Int(s.midiSourceUID), forKey: "in\(i).midiSrc")
+            d.set(Int(s.program),       forKey: "in\(i).program")
+            d.set(s.octave,             forKey: "in\(i).octave")
         }
         for (b, bus) in buses.enumerated() { d.set(bus.deviceUID, forKey: "out\(b).uid") }
     }
@@ -188,6 +339,9 @@ final class MixerModel: ObservableObject {
             strips[i].mute = d.bool(forKey: "in\(i).mute")
             strips[i].gate = d.bool(forKey: "in\(i).gate")
             strips[i].gateThreshold = d.object(forKey: "in\(i).gateT") as? Double ?? -50
+            strips[i].midiSourceUID = MIDIUniqueID(d.integer(forKey: "in\(i).midiSrc"))
+            strips[i].program       = UInt8(clamping: d.integer(forKey: "in\(i).program"))
+            strips[i].octave        = d.object(forKey: "in\(i).octave") as? Int ?? 4
             if let r = d.array(forKey: "in\(i).routes") as? [Int], r.count == 4 {
                 strips[i].routes = r.map { $0 != 0 }
             } else if i == 0 {
@@ -210,7 +364,8 @@ final class MixerModel: ObservableObject {
         }
         for i in 0..<4 {
             let uid = savedIn[i]
-            if !uid.isEmpty, inputs.contains(where: { $0.uid == uid }) { setInput(i, uid: uid) }
+            if uid == MIDI_UID { setInput(i, uid: uid) }
+            else if !uid.isEmpty, inputs.contains(where: { $0.uid == uid }) { setInput(i, uid: uid) }
         }
     }
 
@@ -323,6 +478,30 @@ struct Meter: View {
     }
 }
 
+/// Only these two views observe Meters, so a 30 Hz tick invalidates them and
+/// nothing else.
+struct StripMeters: View {
+    @ObservedObject var meters: Meters
+    let index: Int
+    var body: some View {
+        VStack(spacing: 3) {
+            Meter(level: meters.l(index))
+            Meter(level: meters.r(index))
+        }
+    }
+}
+
+struct GateLamp: View {
+    @ObservedObject var meters: Meters
+    let index: Int
+    var body: some View {
+        let open = meters.l(index) > 0.002
+        Text(open ? "OPEN" : "SHUT")
+            .font(.system(size: 8, weight: .bold))
+            .foregroundStyle(open ? DS.glow : DS.textDim)
+    }
+}
+
 // MARK: - Controls
 
 private struct StateButton: View {
@@ -379,9 +558,7 @@ struct StripView: View {
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(live ? DS.text : DS.textDim)
                     if live && strip.gate {
-                        Text(strip.meterL > 0.002 ? "OPEN" : "SHUT")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(strip.meterL > 0.002 ? DS.glow : DS.textDim)
+                        GateLamp(meters: model.meters, index: index)
                     }
                     Spacer()
                 }
@@ -390,15 +567,17 @@ struct StripView: View {
                     get: { strip.deviceUID },
                     set: { model.setInput(index, uid: $0) })) {
                     Text("None").tag("")
+                    Divider()
                     ForEach(model.inputCandidates(for: index)) { d in Text(d.name).tag(d.uid) }
+                    Divider()
+                    Text("MIDI Instrument").tag(MIDI_UID)
                 }
                 .labelsHidden().pickerStyle(.menu).controlSize(.small)
 
-                VStack(spacing: 3) {
-                    Meter(level: strip.meterL)
-                    Meter(level: strip.meterR)
-                }
-                .opacity(live ? 1 : 0.22)
+                if strip.isMidi { midiControls }
+
+                StripMeters(meters: model.meters, index: index)
+                    .opacity(live ? 1 : 0.22)
 
                 Row(label: "Gain", readout: String(format: "%+.0f dB", 20 * log10(max(strip.gain, 0.001)))) {
                     Slider(value: Binding(get: { strip.gain },
@@ -444,6 +623,56 @@ struct StripView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder private var midiControls: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Text("SRC").font(.system(size: 9, weight: .bold)).foregroundStyle(DS.textDim)
+                Picker("", selection: Binding(
+                    get: { strip.midiSourceUID },
+                    set: { model.setMidiSource(index, uid: $0) })) {
+                    Text("None").tag(MIDIUniqueID(0))
+                    ForEach(model.midiSources) { src in Text(src.name).tag(src.id) }
+                }
+                .labelsHidden().pickerStyle(.menu).controlSize(.mini)
+            }
+
+            HStack(spacing: 6) {
+                Text("INST").font(.system(size: 9, weight: .bold)).foregroundStyle(DS.textDim)
+                Picker("", selection: Binding(
+                    get: { strip.program },
+                    set: { model.setProgram(index, program: $0) })) {
+                    ForEach(GM_INSTRUMENTS, id: \.program) { i in
+                        Text(i.name).tag(i.program)
+                    }
+                }
+                .labelsHidden().pickerStyle(.menu).controlSize(.mini)
+            }
+
+            HStack(spacing: 5) {
+                StateButton(label: "Keys", on: strip.keyboard) {
+                    if strip.keyboard { model.disableKeyboard() }
+                    else { model.enableKeyboard(index) }
+                }
+                if strip.keyboard {
+                    Text("OCT \(strip.octave)")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(DS.glow)
+                    Text("Z / X")
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundStyle(DS.textDim)
+                }
+                Spacer()
+                if strip.notes > 0 {
+                    Text("\(strip.notes)")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(DS.glowLit)
+                }
+                StateButton(label: "Panic", on: false, faultTint: true) { model.panic(index) }
+            }
+        }
+        .padding(.vertical, 2)
     }
 
     private var panLabel: String {

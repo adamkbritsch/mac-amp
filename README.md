@@ -159,6 +159,32 @@ and tells you.
   nonetheless never valid destinations here.
 - **Survives unplugging.** Pull an interface and its strip empties; plug it back
   in and it returns.
+- **Plays MIDI.** Any strip can be a MIDI instrument instead of an audio input,
+  driven by a hardware controller or by the computer keyboard.
+
+### MIDI
+
+MIDI is not audio. A controller sends "C#4, velocity 90" and nothing else, so
+playing it needs a sound source that MacAmp does not otherwise have. Selecting
+**MIDI Instrument** in a strip's picker gives that strip Apple's built-in DLS
+General MIDI synthesiser, and from there it behaves like any other source:
+gain, pan, mute, solo, gate, metering and routing all apply unchanged.
+
+- **Hardware controllers** appear in the strip's source list. CoreMIDI is asked
+  for the MIDI 1.0 protocol over the newer packet API, so legacy devices are
+  translated by the system and there is only one packet shape to parse.
+- **The computer keyboard** plays notes in the layout you already know: home row
+  for white keys, the row above for black, `Z` and `X` to shift octave. Only one
+  strip can hold the keyboard at a time, since one keypress sounding several
+  instruments is never what you meant. Key repeat is suppressed, and releasing
+  a key while the window is not focused still sends its note-off, so nothing
+  gets stranded on.
+- **Panic** silences every sounding note on the strip.
+
+The synth runs at 48 kHz internally and is resampled to each bus exactly like a
+hardware input. Because it has no hardware clock, nothing paces it — a producer
+thread simply keeps the ring buffer topped up and sleeps when it is full, so the
+drift correction sees a source that never actually drifts.
 
 ### Clock drift
 

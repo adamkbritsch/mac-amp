@@ -38,6 +38,8 @@ void rb_detach(RingBuffer *rb, uint32_t consumer);
 int  rb_is_attached(const RingBuffer *rb, uint32_t consumer);
 
 uint32_t rb_available(const RingBuffer *rb, uint32_t consumer);
+/// Frames the producer may write before it would overrun the slowest consumer.
+uint32_t rb_space(const RingBuffer *rb);
 uint32_t rb_write(RingBuffer *rb, const float *src, uint32_t frames);
 
 int  rb_peek_frame(const RingBuffer *rb, uint32_t consumer,

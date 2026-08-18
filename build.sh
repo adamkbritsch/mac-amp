@@ -64,7 +64,8 @@ $NICE swiftc \
   -import-objc-header "$SRC/Bridging.h" \
   -framework SwiftUI -framework AppKit \
   -framework CoreAudio -framework AudioToolbox -framework AVFoundation \
-  "$SRC/App.swift" "$SRC/Devices.swift" \
+  -framework CoreMIDI \
+  "$SRC/App.swift" "$SRC/Devices.swift" "$SRC/Midi.swift" \
   "$OUT/obj/RingBuffer.o" "$OUT/obj/AudioBridge.o" \
   -o "$APP/Contents/MacOS/$APP_NAME"
 

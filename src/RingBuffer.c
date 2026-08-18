@@ -53,6 +53,18 @@ uint32_t rb_available(const RingBuffer *rb, uint32_t c) {
     return w - r;
 }
 
+uint32_t rb_space(const RingBuffer *rb) {
+    uint32_t w   = atomic_load_explicit(&rb->write,  memory_order_relaxed);
+    uint32_t act = atomic_load_explicit(&rb->active, memory_order_acquire);
+    uint32_t used = 0;
+    for (uint32_t c = 0; c < MA_MAX_CONSUMERS; c++) {
+        if (!((act >> c) & 1u)) continue;
+        uint32_t u = w - atomic_load_explicit(&rb->read[c], memory_order_acquire);
+        if (u > used) used = u;
+    }
+    return rb->capacity - used;
+}
+
 uint32_t rb_write(RingBuffer *rb, const float *src, uint32_t frames) {
     uint32_t w    = atomic_load_explicit(&rb->write,  memory_order_relaxed);
     uint32_t act  = atomic_load_explicit(&rb->active, memory_order_acquire);

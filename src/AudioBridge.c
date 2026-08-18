@@ -7,6 +7,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+#include <pthread.h>
+#include <unistd.h>
 
 #define MA_BUFFER_FRAMES   256u
 #define MA_MAX_SLICE       4096u
@@ -29,7 +31,13 @@ static inline void     stf(_Atomic uint32_t *a, float v) {
 }
 
 typedef struct {
-    AudioUnit        unit;
+    MASourceKind     kind;
+    AudioUnit        unit;         // AUHAL, for MA_SRC_AUDIO
+    AudioUnit        synth;        // DLS/General MIDI, for MA_SRC_MIDI
+    pthread_t        synthThread;
+    _Atomic int      synthRun;
+    _Atomic int      noteCount;
+    double           synthTime;    // synth thread only
     AudioDeviceID    dev;
     RingBuffer       ring;
     AudioBufferList *inList;
@@ -88,6 +96,47 @@ static inline float hermite(float y0, float y1, float y2, float y3, float t) {
 }
 
 // ---------------------------------------------------------------------------
+// gate -> gain -> meter -> ring. Shared so a synthesised source and a hardware
+// one behave identically downstream; only how the frames arrive differs.
+// ---------------------------------------------------------------------------
+static void process_and_push(InputStrip *s, const float *L, const float *R, UInt32 n) {
+    const float gain     = ldf(&s->gain);
+    const int   gateOn   = atomic_load_explicit(&s->gateOn, memory_order_relaxed);
+    const float thresh   = powf(10.0f, ldf(&s->gateThresh) / 20.0f);
+    const float atkCoef  = 0.01f, relCoef = 0.0002f;
+
+    float env = s->gateEnv, gg = s->gateGain;
+    float pL = 0.0f, pR = 0.0f;
+
+    for (UInt32 i = 0; i < n; i++) {
+        float l = L[i], r = R[i];
+        if (gateOn) {
+            float a = fabsf(l) > fabsf(r) ? fabsf(l) : fabsf(r);
+            env += (a > env ? atkCoef : relCoef) * (a - env);
+            float target = env > thresh ? 1.0f : 0.0f;
+            gg += (target > gg ? atkCoef : relCoef) * (target - gg);
+            l *= gg; r *= gg;
+        } else {
+            gg = 1.0f;
+        }
+        l *= gain; r *= gain;
+        s->ilv[i * 2 + 0] = l;
+        s->ilv[i * 2 + 1] = r;
+        float al = fabsf(l), ar = fabsf(r);
+        if (al > pL) pL = al;
+        if (ar > pR) pR = ar;
+    }
+    s->gateEnv = env; s->gateGain = gg;
+    atomic_store_explicit(&s->gateOpen, gg > 0.5f, memory_order_relaxed);
+    if (pL > ldf(&s->peakL)) stf(&s->peakL, pL);
+    if (pR > ldf(&s->peakR)) stf(&s->peakR, pR);
+
+    // A short write means the slowest bus has fallen behind. Nothing useful to
+    // do about it here -- the drift control will pull that bus back.
+    rb_write(&s->ring, s->ilv, n);
+}
+
+// ---------------------------------------------------------------------------
 // Input callback: capture -> gate -> gain -> meter -> ring.
 // Gain and the gate are applied here so every bus fed by this strip sees the
 // same fader, and the meter reflects what is actually being sent.
@@ -109,49 +158,7 @@ static OSStatus inputProc(void *ref, AudioUnitRenderActionFlags *flags,
     const float *R = (s->channels > 1 && s->inList->mNumberBuffers > 1)
                    ? (const float *)s->inList->mBuffers[1].mData : L;
 
-    const float gain     = ldf(&s->gain);
-    const int   gateOn   = atomic_load_explicit(&s->gateOn, memory_order_relaxed);
-    const float threshDb = ldf(&s->gateThresh);
-    const float thresh   = powf(10.0f, threshDb / 20.0f);
-
-    // Fast attack so a note is never clipped at its transient; slow release so
-    // the gate does not chatter on a decaying note.
-    const float atkCoef = 0.01f;
-    const float relCoef = 0.0002f;
-
-    float env = s->gateEnv, gg = s->gateGain;
-    float pL = 0.0f, pR = 0.0f;
-
-    for (UInt32 i = 0; i < nFrames; i++) {
-        float l = L[i], r = R[i];
-
-        if (gateOn) {
-            float a  = fabsf(l) > fabsf(r) ? fabsf(l) : fabsf(r);
-            env += (a > env ? atkCoef : relCoef) * (a - env);
-            float target = env > thresh ? 1.0f : 0.0f;
-            gg += (target > gg ? atkCoef : relCoef) * (target - gg);
-            l *= gg; r *= gg;
-        } else {
-            gg = 1.0f;
-        }
-
-        l *= gain; r *= gain;
-        s->ilv[i * 2 + 0] = l;
-        s->ilv[i * 2 + 1] = r;
-
-        float al = fabsf(l), ar = fabsf(r);
-        if (al > pL) pL = al;
-        if (ar > pR) pR = ar;
-    }
-    s->gateEnv = env; s->gateGain = gg;
-    atomic_store_explicit(&s->gateOpen, gg > 0.5f, memory_order_relaxed);
-
-    // Peak-hold: the UI clears on read, so a transient cannot be missed
-    // between frames.
-    if (pL > ldf(&s->peakL)) stf(&s->peakL, pL);
-    if (pR > ldf(&s->peakR)) stf(&s->peakR, pR);
-
-    rb_write(&s->ring, s->ilv, nFrames);
+    process_and_push(s, L, R, nFrames);
     return noErr;
 }
 
@@ -275,6 +282,56 @@ static OSStatus outputProc(void *ref, AudioUnitRenderActionFlags *flags,
 }
 
 // ---------------------------------------------------------------------------
+// Synth producer thread
+//
+// A synthesiser has no hardware clock, so nothing external paces it. This
+// thread simply keeps the ring topped up and sleeps when it is full, which
+// means the output buses' existing drift correction sees a source that never
+// actually drifts -- the correction just sits at unity.
+// ---------------------------------------------------------------------------
+#define MA_SYNTH_BLOCK 512u
+
+static void *synth_thread(void *arg) {
+    InputStrip *s = (InputStrip *)arg;
+
+    // Preallocated once: nothing in the loop may allocate.
+    size_t listBytes = sizeof(AudioBufferList) + sizeof(AudioBuffer);
+    AudioBufferList *bl = (AudioBufferList *)calloc(1, listBytes);
+    if (!bl) return NULL;
+    bl->mNumberBuffers = 2;
+    float *chans[2] = {
+        (float *)calloc(MA_SYNTH_BLOCK, sizeof(float)),
+        (float *)calloc(MA_SYNTH_BLOCK, sizeof(float))
+    };
+    if (!chans[0] || !chans[1]) { free(chans[0]); free(chans[1]); free(bl); return NULL; }
+
+    while (atomic_load_explicit(&s->synthRun, memory_order_relaxed)) {
+        if (rb_space(&s->ring) < MA_SYNTH_BLOCK) { usleep(2000); continue; }
+
+        for (int c = 0; c < 2; c++) {
+            bl->mBuffers[c].mNumberChannels = 1;
+            bl->mBuffers[c].mDataByteSize   = MA_SYNTH_BLOCK * sizeof(float);
+            bl->mBuffers[c].mData           = chans[c];
+        }
+        AudioUnitRenderActionFlags flags = 0;
+        AudioTimeStamp ts;
+        memset(&ts, 0, sizeof ts);
+        ts.mSampleTime = s->synthTime;
+        ts.mFlags      = kAudioTimeStampSampleTimeValid;
+
+        if (AudioUnitRender(s->synth, &flags, &ts, 0, MA_SYNTH_BLOCK, bl) != noErr) {
+            usleep(4000);
+            continue;
+        }
+        s->synthTime += (double)MA_SYNTH_BLOCK;
+        process_and_push(s, chans[0], chans[1], MA_SYNTH_BLOCK);
+    }
+
+    free(chans[0]); free(chans[1]); free(bl);
+    return NULL;
+}
+
+// ---------------------------------------------------------------------------
 // Device helpers
 // ---------------------------------------------------------------------------
 static double device_rate(AudioDeviceID dev) {
@@ -365,6 +422,21 @@ void macamp_clear_input(MacAmpEngine *e, int slot) {
     if (!e || slot < 0 || slot >= MA_MAX_INPUTS) return;
     InputStrip *s = &e->in[slot];
     atomic_store_explicit(&s->active, 0, memory_order_release);
+
+    // Join the producer before disposing the unit it renders, or the thread
+    // calls AudioUnitRender on freed memory.
+    if (atomic_load_explicit(&s->synthRun, memory_order_relaxed)) {
+        atomic_store_explicit(&s->synthRun, 0, memory_order_release);
+        pthread_join(s->synthThread, NULL);
+    }
+    if (s->synth) {
+        AudioUnitUninitialize(s->synth);
+        AudioComponentInstanceDispose(s->synth);
+        s->synth = NULL;
+    }
+    atomic_store_explicit(&s->noteCount, 0, memory_order_relaxed);
+    s->synthTime = 0;
+    s->kind = MA_SRC_AUDIO;
 
     if (s->unit) {
         AudioOutputUnitStop(s->unit);
@@ -535,6 +607,121 @@ void macamp_destroy(MacAmpEngine *e) {
     for (int b = 0; b < MA_MAX_OUTPUTS; b++) macamp_clear_output(e, b);
     for (int i = 0; i < MA_MAX_INPUTS;  i++) macamp_clear_input(e, i);
     free(e);
+}
+
+// ---------------------------------------------------------------------------
+// MIDI instrument strips
+// ---------------------------------------------------------------------------
+int macamp_set_midi_input(MacAmpEngine *e, int slot, double sampleRate,
+                          char *err, size_t errLen)
+{
+    if (!e || slot < 0 || slot >= MA_MAX_INPUTS) return -1;
+    macamp_clear_input(e, slot);
+    err[0] = '\0';
+    InputStrip *s = &e->in[slot];
+
+    if (sampleRate <= 0) sampleRate = 48000.0;
+    s->kind     = MA_SRC_MIDI;
+    s->rate     = sampleRate;
+    s->channels = 2;
+    s->dev      = 0;
+
+    AudioComponentDescription d;
+    memset(&d, 0, sizeof d);
+    d.componentType         = kAudioUnitType_MusicDevice;
+    d.componentSubType      = kAudioUnitSubType_DLSSynth;
+    d.componentManufacturer = kAudioUnitManufacturer_Apple;
+    AudioComponent comp = AudioComponentFindNext(NULL, &d);
+    if (!comp) { snprintf(err, errLen, "The system MIDI synthesiser is unavailable."); goto fail; }
+    if (AudioComponentInstanceNew(comp, &s->synth) != noErr || !s->synth) {
+        snprintf(err, errLen, "Could not instantiate the MIDI synthesiser."); goto fail;
+    }
+
+    AudioStreamBasicDescription f = pcm_format(sampleRate, 2);
+    if (AudioUnitSetProperty(s->synth, kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Output, 0, &f, sizeof f) != noErr) {
+        snprintf(err, errLen, "The synthesiser rejected the output format."); goto fail;
+    }
+    UInt32 maxSlice = MA_MAX_SLICE;
+    AudioUnitSetProperty(s->synth, kAudioUnitProperty_MaximumFramesPerSlice,
+                         kAudioUnitScope_Global, 0, &maxSlice, sizeof maxSlice);
+    if (AudioUnitInitialize(s->synth) != noErr) {
+        snprintf(err, errLen, "Could not initialise the MIDI synthesiser."); goto fail;
+    }
+
+    s->ilv = (float *)calloc(MA_MAX_SLICE * 2, sizeof(float));
+    if (!s->ilv) { snprintf(err, errLen, "Out of memory."); goto fail; }
+    if (!rb_init(&s->ring, MA_RING_FRAMES)) { snprintf(err, errLen, "Out of memory."); goto fail; }
+
+    s->gateEnv = 0.0f; s->gateGain = 1.0f; s->synthTime = 0.0;
+    atomic_store_explicit(&s->active, 1, memory_order_release);
+
+    for (int b = 0; b < MA_MAX_OUTPUTS; b++) {
+        if (atomic_load_explicit(&e->out[b].active, memory_order_acquire)) {
+            rb_attach(&s->ring, (uint32_t)b);
+            e->out[b].phase[slot] = 0.0;
+        }
+    }
+    recompute_solo(e);
+
+    atomic_store_explicit(&s->synthRun, 1, memory_order_release);
+    if (pthread_create(&s->synthThread, NULL, synth_thread, s) != 0) {
+        atomic_store_explicit(&s->synthRun, 0, memory_order_release);
+        snprintf(err, errLen, "Could not start the synthesiser thread."); goto fail;
+    }
+    return 0;
+
+fail:
+    macamp_clear_input(e, slot);
+    return -1;
+}
+
+void macamp_midi_event(MacAmpEngine *e, int slot,
+                       unsigned char status, unsigned char d1, unsigned char d2)
+{
+    if (!e || slot < 0 || slot >= MA_MAX_INPUTS) return;
+    InputStrip *s = &e->in[slot];
+    if (s->kind != MA_SRC_MIDI || !s->synth) return;
+
+    MusicDeviceMIDIEvent(s->synth, status, d1, d2, 0);
+
+    // Note-on with velocity 0 is a note-off; a surprising number of
+    // controllers send only that form.
+    unsigned char cmd = status & 0xF0;
+    if (cmd == 0x90 && d2 > 0) {
+        atomic_fetch_add_explicit(&s->noteCount, 1, memory_order_relaxed);
+    } else if (cmd == 0x80 || (cmd == 0x90 && d2 == 0)) {
+        int prev = atomic_fetch_sub_explicit(&s->noteCount, 1, memory_order_relaxed);
+        if (prev <= 0) atomic_store_explicit(&s->noteCount, 0, memory_order_relaxed);
+    }
+}
+
+void macamp_midi_program(MacAmpEngine *e, int slot, unsigned char program) {
+    if (!e || slot < 0 || slot >= MA_MAX_INPUTS) return;
+    InputStrip *s = &e->in[slot];
+    if (s->kind != MA_SRC_MIDI || !s->synth) return;
+    MusicDeviceMIDIEvent(s->synth, 0xC0, program & 0x7F, 0, 0);
+}
+
+void macamp_midi_all_notes_off(MacAmpEngine *e, int slot) {
+    if (!e || slot < 0 || slot >= MA_MAX_INPUTS) return;
+    InputStrip *s = &e->in[slot];
+    if (s->kind != MA_SRC_MIDI || !s->synth) return;
+    for (unsigned char ch = 0; ch < 16; ch++) {
+        MusicDeviceMIDIEvent(s->synth, 0xB0 | ch, 123, 0, 0);   // all notes off
+        MusicDeviceMIDIEvent(s->synth, 0xB0 | ch, 120, 0, 0);   // all sound off
+    }
+    atomic_store_explicit(&s->noteCount, 0, memory_order_relaxed);
+}
+
+int macamp_midi_active_notes(const MacAmpEngine *e, int slot) {
+    if (!e || slot < 0 || slot >= MA_MAX_INPUTS) return 0;
+    return atomic_load_explicit(&e->in[slot].noteCount, memory_order_relaxed);
+}
+
+MASourceKind macamp_input_kind(const MacAmpEngine *e, int slot) {
+    if (!e || slot < 0 || slot >= MA_MAX_INPUTS) return MA_SRC_AUDIO;
+    return e->in[slot].kind;
 }
 
 int macamp_input_active(const MacAmpEngine *e, int slot) {
