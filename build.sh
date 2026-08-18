@@ -101,7 +101,26 @@ cat > "$OUT/entitlements.plist" <<ENT
 </plist>
 ENT
 
-codesign --force --sign - --options runtime \
+# A STABLE signing identity is what stops macOS re-asking for microphone access
+# on every rebuild. Ad-hoc signing pins TCC's grant to the binary's cdhash, which
+# changes every build, so each rebuild looks like a brand-new app that has never
+# been granted anything. Signing with a certificate makes the designated
+# requirement identity-based instead, and the grant survives.
+#
+# The cert is self-signed and local -- no Apple Developer account. It is not
+# trusted by Gatekeeper, which does not matter for an app you build yourself;
+# notarisation is only needed to hand the app to someone else.
+SIGN_ID="MacAmp Local Signing"
+if security find-identity -p codesigning 2>/dev/null | grep -q "$SIGN_ID"; then
+  echo "  signing as: $SIGN_ID"
+else
+  SIGN_ID="-"
+  echo "  WARNING: '$SIGN_ID' identity not found; falling back to ad-hoc."
+  echo "           macOS will re-request microphone access after every rebuild."
+  echo "           Run ./make-signing-identity.sh to fix."
+fi
+
+codesign --force --sign "$SIGN_ID" --options runtime \
   --entitlements "$OUT/entitlements.plist" --timestamp=none "$APP"
 codesign --verify --strict "$APP"
 

@@ -453,6 +453,21 @@ struct StripView: View {
     }
 }
 
+// MARK: - Title bar geometry
+
+/// The traffic lights and the wordmark have to agree about where the title bar
+/// ends, so both read these instead of carrying their own magic numbers.
+enum TitleBar {
+    /// How far the window buttons are pushed down from the top.
+    static let buttonDrop: CGFloat = 7
+    /// Standard macOS window button, 12pt square.
+    static let buttonHeight: CGFloat = 12
+    /// Requested gap between the bottom of the lights and the top of the title.
+    static let gap: CGFloat = 2
+
+    static var titleTop: CGFloat { buttonDrop + buttonHeight + gap }   // 21
+}
+
 // MARK: - Traffic lights
 
 /// Nudges the three window buttons down without touching anything else.
@@ -544,7 +559,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .frame(height: 26)
+            .fixedSize(horizontal: false, vertical: true)
 
             HStack(alignment: .top, spacing: 13) {
                 VStack(spacing: 9) {
@@ -594,8 +609,9 @@ struct ContentView: View {
                 .frame(width: 246)
             }
         }
-        .padding(16)
-        .padding(.top, 4)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 16)
+        .padding(.top, TitleBar.titleTop)
         // 336 (strips) + 246 (outputs) + 13 (gap) + 32 (padding). Pinned so the
         // header's unbounded Spacer cannot make the content width indeterminate
         // under .windowResizability(.contentSize).
@@ -604,7 +620,7 @@ struct ContentView: View {
             LinearGradient(colors: [DS.bgTop, DS.bgMid, DS.bgBottom],
                            startPoint: .top, endPoint: .bottom)
         )
-        .background(TrafficLightOffset(dy: 7).frame(width: 0, height: 0))
+        .background(TrafficLightOffset(dy: TitleBar.buttonDrop).frame(width: 0, height: 0))
         .preferredColorScheme(.dark)
     }
 }
