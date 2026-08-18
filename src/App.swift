@@ -72,6 +72,8 @@ final class MixerModel: ObservableObject {
 
     private let engine: OpaquePointer? = macamp_create()
     private let watcher = DeviceChangeWatcher()
+    private let outputGuard = DefaultOutputGuard()
+    @Published var revertedNotice: String = ""
     private var meterTimer: Timer?
     let meters = Meters()
     private var meterTick = 0
@@ -82,6 +84,23 @@ final class MixerModel: ObservableObject {
     init() {
         restoreAliases()
         refreshDevices()
+
+        // Keep macOS from handing system audio to an instrument we are capturing.
+        outputGuard.isCaptureDevice = { [weak self] id in
+            guard let self else { return false }
+            return self.strips.contains { s in
+                !s.isMidi && !s.deviceUID.isEmpty
+                    && self.inputs.first(where: { $0.uid == s.deviceUID })?.id == id
+            }
+        }
+        outputGuard.onReverted = { [weak self] name in
+            Task { @MainActor in
+                self?.revertedNotice = "System output was switched to \(name); put back."
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                self?.revertedNotice = ""
+            }
+        }
+        outputGuard.start()
         watcher.start { [weak self] in self?.refreshDevices() }
         // 30 Hz: fast enough that a meter reads as continuous, slow enough to
         // stay off the audio threads' backs.

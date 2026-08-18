@@ -85,6 +85,79 @@ enum DeviceQuery {
     }
 }
 
+extension DeviceQuery {
+    @discardableResult
+    static func setDefaultOutput(_ dev: AudioDeviceID) -> Bool {
+        var a = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var id = dev
+        return AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &a, 0, nil,
+                                          UInt32(MemoryLayout<AudioDeviceID>.size), &id) == noErr
+    }
+}
+
+/// macOS makes a newly connected USB audio device the system output, which is
+/// reasonable for headphones and wrong for a guitar interface: every alert and
+/// every track suddenly plays into the amp instead of the speakers.
+///
+/// This watches the default output and puts it back if it lands on a device
+/// MacAmp is currently capturing from. The condition is deliberately narrow --
+/// it never touches a switch to any other device, so choosing headphones or a
+/// display still works normally.
+final class DefaultOutputGuard {
+    private var addr = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    private var block: AudioObjectPropertyListenerBlock?
+    private var lastGood: AudioDeviceID = 0
+
+    /// True when the device is serving as one of MacAmp's inputs.
+    var isCaptureDevice: (AudioDeviceID) -> Bool = { _ in false }
+    /// Called when a takeover was reverted, so the UI can say so.
+    var onReverted: ((String) -> Void)?
+
+    func start() {
+        stop()
+        let cur = DeviceQuery.defaultDevice(input: false)
+        if !isCaptureDevice(cur) { lastGood = cur }
+
+        let b: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            guard let self else { return }
+            let now = DeviceQuery.defaultDevice(input: false)
+            guard self.isCaptureDevice(now) else {
+                // A normal switch. Remember it as somewhere safe to go back to.
+                if now != 0 { self.lastGood = now }
+                return
+            }
+            let name = DeviceQuery.all().first { $0.id == now }?.name ?? "that device"
+            // Fall back to the built-in speakers if there is no earlier choice.
+            var target = self.lastGood
+            if target == 0 || self.isCaptureDevice(target) {
+                target = DeviceQuery.outputs().first {
+                    $0.name.localizedCaseInsensitiveContains("MacBook") && $0.outputChannels > 0
+                }?.id ?? 0
+            }
+            guard target != 0, target != now else { return }
+            DeviceQuery.setDefaultOutput(target)
+            self.onReverted?(name)
+        }
+        block = b
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &addr, DispatchQueue.main, b)
+    }
+
+    func stop() {
+        guard let b = block else { return }
+        AudioObjectRemovePropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &addr, DispatchQueue.main, b)
+        block = nil
+    }
+    deinit { stop() }
+}
+
 /// Fires whenever the set of hardware devices changes (plug / unplug).
 final class DeviceChangeWatcher {
     private var address = AudioObjectPropertyAddress(

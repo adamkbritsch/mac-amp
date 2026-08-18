@@ -170,6 +170,15 @@ and tells you.
   nonetheless never valid destinations here.
 - **Survives unplugging.** Pull an interface and its strip empties; plug it back
   in and it returns.
+- **Stops your instrument stealing system audio.** macOS makes a newly connected
+  USB audio device the default *output*, which is sensible for headphones and
+  wrong for a guitar interface — every alert and every track suddenly plays into
+  the amp. The Amphonix genuinely advertises output channels, so macOS is not
+  misreading anything and no setting removes it from the Sound menu. MacAmp
+  instead watches the default output and puts it back whenever it lands on a
+  device MacAmp is currently capturing from, saying so in the header when it
+  does. The condition is deliberately narrow: switching to headphones, a
+  display, or anything else you are not recording works normally.
 - **Plays MIDI.** Any strip can be a MIDI instrument instead of an audio input,
   driven by a hardware controller or by the computer keyboard.
 
