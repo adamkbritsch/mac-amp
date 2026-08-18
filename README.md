@@ -13,7 +13,7 @@ Four inputs, four output buses, a routing matrix, and nothing else. The tone is
 your hardware's business — MacAmp only does the part macOS itself refuses to.
 
 <p align="center">
-  <img src="assets/screenshot.png" alt="MacAmp — four input strips with gain, pan, mute, solo, gate and metering, routed to four output buses" width="820">
+  <img src="assets/screenshot.png" alt="MacAmp — four input strips with gain, pan, mute, solo, gate and metering, routed to four output buses" width="860">
 </p>
 
 > A personal project, built for a Sonicake Amphonix 2 going into a MacBook Pro.
