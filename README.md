@@ -101,8 +101,15 @@ nm build/obj/AudioBridge.o | grep swift_    # returns nothing
 git clone https://github.com/adamkbritsch/macamp.git
 cd macamp
 ./build.sh
-cp -R build/MacAmp.app /Applications/
+./install.sh
 ```
+
+Use `install.sh` rather than copying the bundle by hand. Replacing an app in
+place leaves its old LaunchServices registration behind, and once a few have
+accumulated `open` will launch a broken instance that runs **with no window at
+all** — while running the binary directly still works perfectly. It looks like
+an app bug and is not one. `install.sh` unregisters before replacing and
+re-registers after.
 
 Then open it. Monitoring starts on launch and stops when you quit — there is no
 on switch, because an app you opened deliberately is the on switch.

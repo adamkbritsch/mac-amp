@@ -235,35 +235,131 @@ final class MixerModel: ObservableObject {
     }
 }
 
+// MARK: - Design system
+//
+// Every colour here is lifted from MacAmp.icon's own gradients, so the app and
+// its Dock tile are visibly the same object. Two rules, borrowed as structure
+// rather than style: state is carried by BRIGHTNESS, never by hue, and exactly
+// one hue is reserved for genuine faults.
+
+private func P3(_ r: Double, _ g: Double, _ b: Double) -> Color {
+    Color(.displayP3, red: r, green: g, blue: b)
+}
+
+enum DS {
+    // Ground: the icon's backdrop, dark at the top and settling into violet at
+    // the floor. Near-black so OLED panels actually switch pixels off.
+    static let bgTop    = P3(0.055, 0.066, 0.070)
+    static let bgMid    = P3(0.086, 0.082, 0.104)
+    static let bgBottom = P3(0.166, 0.141, 0.183)
+
+    // The icon's amp face: near-white lavender falling to periwinkle. This is
+    // the app's whole identity, and it belongs to signal — meters, active
+    // routing, anything currently carrying audio.
+    static let glowLit  = P3(0.897, 0.905, 1.000)
+    static let glow     = P3(0.640, 0.686, 0.930)
+    static let glowDeep = P3(0.510, 0.547, 0.806)
+
+    static let signal = LinearGradient(colors: [glowDeep, glow, glowLit],
+                                       startPoint: .leading, endPoint: .trailing)
+    static let wordmark = LinearGradient(colors: [glowLit, glowDeep],
+                                         startPoint: .top, endPoint: .bottom)
+
+    // Text ramp — one axis, brightness.
+    static let textLit = P3(0.930, 0.930, 0.955)
+    static let text    = P3(0.720, 0.725, 0.775)
+    static let textDim = P3(0.475, 0.480, 0.535)
+
+    // Surfaces. No left accent bars anywhere: a panel says "live" by getting
+    // brighter, not by growing a coloured stripe.
+    static let panel       = Color.white.opacity(0.038)
+    static let panelLive   = Color.white.opacity(0.062)
+    static let hairline    = Color.white.opacity(0.070)
+    static let hairlineLit = Color.white.opacity(0.150)
+
+    static let fault = P3(0.920, 0.380, 0.360)   // the one hue exception
+
+    static let radius: CGFloat = 8
+}
+
+private struct Panel<Content: View>: View {
+    var live = false
+    @ViewBuilder var content: Content
+    var body: some View {
+        content
+            .padding(11)
+            .background(RoundedRectangle(cornerRadius: DS.radius, style: .continuous)
+                .fill(live ? DS.panelLive : DS.panel))
+            .overlay(RoundedRectangle(cornerRadius: DS.radius, style: .continuous)
+                .strokeBorder(live ? DS.hairlineLit : DS.hairline, lineWidth: 1))
+    }
+}
+
 // MARK: - Meter
 
 struct Meter: View {
-    var level: Double            // 0..1 linear peak
+    var level: Double
 
-    // Linear peak is nearly useless to read; audio lives in the top few dB.
+    /// Linear peak is unreadable — audio lives in the top few dB — so the bar
+    /// is dBFS across the last 60.
     private var scaled: Double {
         guard level > 0.0001 else { return 0 }
-        let db = 20 * log10(level)
-        return max(0, min(1, (db + 60) / 60))     // -60 dBFS .. 0 dBFS
-    }
-
-    private var tint: Color {
-        if level >= 0.99 { return .red }
-        if scaled > 0.85 { return .orange }
-        return .green
+        return max(0, min(1, (20 * log10(level) + 60) / 60))
     }
 
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 1.5)
-                    .fill(Color.primary.opacity(0.09))
-                RoundedRectangle(cornerRadius: 1.5)
-                    .fill(tint)
+                Capsule().fill(Color.white.opacity(0.055))
+                Capsule()
+                    .fill(level >= 0.99 ? LinearGradient(colors: [DS.fault, DS.fault],
+                                                         startPoint: .leading, endPoint: .trailing)
+                                        : DS.signal)
                     .frame(width: max(0, geo.size.width * scaled))
+                    .shadow(color: DS.glow.opacity(scaled > 0.02 ? 0.45 : 0), radius: 4)
             }
         }
-        .frame(height: 4)
+        .frame(height: 5)
+    }
+}
+
+// MARK: - Controls
+
+private struct StateButton: View {
+    let label: String
+    let on: Bool
+    var compact = false
+    var faultTint = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 10, weight: .semibold))
+                .frame(width: compact ? 23 : 40, height: 20)
+                .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(on ? (faultTint ? DS.fault.opacity(0.85) : DS.glowDeep.opacity(0.95))
+                             : Color.white.opacity(0.055)))
+                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .strokeBorder(on ? Color.clear : DS.hairline, lineWidth: 1))
+                .foregroundStyle(on ? (faultTint ? Color.white : DS.textLit) : DS.textDim)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct Row<Content: View>: View {
+    let label: String
+    let readout: String
+    @ViewBuilder var content: Content
+    var body: some View {
+        HStack(spacing: 9) {
+            Text(label).font(.system(size: 10, weight: .medium))
+                .foregroundStyle(DS.textDim).frame(width: 30, alignment: .leading)
+            content
+            Text(readout).font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundStyle(DS.text).frame(width: 48, alignment: .trailing)
+        }
     }
 }
 
@@ -272,116 +368,88 @@ struct Meter: View {
 struct StripView: View {
     @ObservedObject var model: MixerModel
     let index: Int
-
     private var strip: MixerModel.Strip { model.strips[index] }
+    private var live: Bool { !strip.deviceUID.isEmpty }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 8) {
-                Text("INPUT \(index + 1)")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.secondary)
-                if strip.gate && !strip.deviceUID.isEmpty {
-                    Text(model.strips[index].meterL > 0.001 ? "GATE OPEN" : "GATE SHUT")
-                        .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                }
-                Spacer()
-            }
-
-            Picker("", selection: Binding(
-                get: { strip.deviceUID },
-                set: { model.setInput(index, uid: $0) })) {
-                Text("None").tag("")
-                ForEach(model.inputCandidates(for: index)) { d in Text(d.name).tag(d.uid) }
-            }
-            .labelsHidden().pickerStyle(.menu)
-
-            VStack(spacing: 2) {
-                Meter(level: strip.meterL)
-                Meter(level: strip.meterR)
-            }
-            .opacity(strip.deviceUID.isEmpty ? 0.25 : 1)
-
-            HStack(spacing: 10) {
-                Text("Gain").font(.system(size: 10)).foregroundStyle(.secondary)
-                Slider(value: Binding(
-                    get: { strip.gain },
-                    set: { model.strips[index].gain = $0; model.pushStrip(index) }),
-                    in: 0...2)
-                Text(String(format: "%+.0f dB", 20 * log10(max(strip.gain, 0.001))))
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.secondary).frame(width: 46, alignment: .trailing)
-            }
-
-            HStack(spacing: 10) {
-                Text("Pan").font(.system(size: 10)).foregroundStyle(.secondary)
-                Slider(value: Binding(
-                    get: { strip.pan },
-                    set: { model.strips[index].pan = $0; model.pushStrip(index) }),
-                    in: -1...1)
-                Text(panLabel).font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.secondary).frame(width: 46, alignment: .trailing)
-            }
-
-            HStack(spacing: 6) {
-                toggle("Mute", on: strip.mute, tint: .red) {
-                    model.strips[index].mute.toggle(); model.pushStrip(index)
-                }
-                toggle("Solo", on: strip.solo, tint: .yellow) {
-                    model.strips[index].solo.toggle(); model.pushStrip(index)
-                }
-                toggle("Gate", on: strip.gate, tint: .blue) {
-                    model.strips[index].gate.toggle(); model.pushStrip(index)
-                }
-                Spacer()
-                ForEach(0..<4, id: \.self) { b in
-                    toggle(BUS_NAMES[b], on: strip.routes[b], tint: .accentColor, compact: true) {
-                        model.strips[index].routes[b].toggle(); model.pushStrip(index)
+        Panel(live: live) {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 7) {
+                    Text("IN \(index + 1)")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(live ? DS.text : DS.textDim)
+                    if live && strip.gate {
+                        Text(strip.meterL > 0.002 ? "OPEN" : "SHUT")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(strip.meterL > 0.002 ? DS.glow : DS.textDim)
                     }
-                    .disabled(model.buses[b].deviceUID.isEmpty)
-                    .opacity(model.buses[b].deviceUID.isEmpty ? 0.3 : 1)
+                    Spacer()
                 }
-            }
 
-            if strip.gate {
-                HStack(spacing: 10) {
-                    Text("Thresh").font(.system(size: 10)).foregroundStyle(.secondary)
-                    Slider(value: Binding(
-                        get: { strip.gateThreshold },
-                        set: { model.strips[index].gateThreshold = $0; model.pushStrip(index) }),
-                        in: -80 ... -10)
-                    Text(String(format: "%.0f dB", strip.gateThreshold))
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.secondary).frame(width: 46, alignment: .trailing)
+                Picker("", selection: Binding(
+                    get: { strip.deviceUID },
+                    set: { model.setInput(index, uid: $0) })) {
+                    Text("None").tag("")
+                    ForEach(model.inputCandidates(for: index)) { d in Text(d.name).tag(d.uid) }
                 }
-            }
+                .labelsHidden().pickerStyle(.menu).controlSize(.small)
 
-            if !strip.error.isEmpty {
-                Text(strip.error).font(.system(size: 10)).foregroundStyle(.orange)
+                VStack(spacing: 3) {
+                    Meter(level: strip.meterL)
+                    Meter(level: strip.meterR)
+                }
+                .opacity(live ? 1 : 0.22)
+
+                Row(label: "Gain", readout: String(format: "%+.0f dB", 20 * log10(max(strip.gain, 0.001)))) {
+                    Slider(value: Binding(get: { strip.gain },
+                        set: { model.strips[index].gain = $0; model.pushStrip(index) }), in: 0...2)
+                        .controlSize(.mini).tint(DS.glowDeep)
+                }
+                Row(label: "Pan", readout: panLabel) {
+                    Slider(value: Binding(get: { strip.pan },
+                        set: { model.strips[index].pan = $0; model.pushStrip(index) }), in: -1...1)
+                        .controlSize(.mini).tint(DS.glowDeep)
+                }
+
+                HStack(spacing: 5) {
+                    StateButton(label: "Mute", on: strip.mute, faultTint: true) {
+                        model.strips[index].mute.toggle(); model.pushStrip(index)
+                    }
+                    StateButton(label: "Solo", on: strip.solo) {
+                        model.strips[index].solo.toggle(); model.pushStrip(index)
+                    }
+                    StateButton(label: "Gate", on: strip.gate) {
+                        model.strips[index].gate.toggle(); model.pushStrip(index)
+                    }
+                    Spacer()
+                    ForEach(0..<4, id: \.self) { b in
+                        StateButton(label: BUS_NAMES[b], on: strip.routes[b], compact: true) {
+                            model.strips[index].routes[b].toggle(); model.pushStrip(index)
+                        }
+                        .disabled(model.buses[b].deviceUID.isEmpty)
+                        .opacity(model.buses[b].deviceUID.isEmpty ? 0.25 : 1)
+                    }
+                }
+
+                if strip.gate {
+                    Row(label: "Thr", readout: String(format: "%.0f dB", strip.gateThreshold)) {
+                        Slider(value: Binding(get: { strip.gateThreshold },
+                            set: { model.strips[index].gateThreshold = $0; model.pushStrip(index) }),
+                            in: -80 ... -10).controlSize(.mini).tint(DS.glowDeep)
+                    }
+                }
+                if !strip.error.isEmpty {
+                    Text(strip.error).font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(DS.fault).fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
-        .padding(11)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
     }
 
     private var panLabel: String {
         let p = strip.pan
         if abs(p) < 0.02 { return "C" }
         return String(format: "%@%.0f", p < 0 ? "L" : "R", abs(p) * 100)
-    }
-
-    private func toggle(_ label: String, on: Bool, tint: Color,
-                        compact: Bool = false, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(label)
-                .font(.system(size: 10, weight: .semibold))
-                .frame(width: compact ? 22 : 38, height: 19)
-                .background(RoundedRectangle(cornerRadius: 4)
-                    .fill(on ? tint.opacity(0.85) : Color.primary.opacity(0.07)))
-                .foregroundStyle(on ? Color.white : Color.secondary)
-        }
-        .buttonStyle(.plain)
     }
 }
 
@@ -391,55 +459,82 @@ struct ContentView: View {
     @ObservedObject var model: MixerModel
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            VStack(spacing: 10) {
-                ForEach(0..<4, id: \.self) { StripView(model: model, index: $0) }
+        VStack(alignment: .leading, spacing: 13) {
+            // No title bar, so the traffic lights float directly over the
+            // gradient. 62pt of leading clears them; the fixed height keeps the
+            // wordmark optically centred on them.
+            HStack(spacing: 8) {
+                Text("MacAmp")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(DS.wordmark)
+                Spacer()
+                if model.permissionDenied {
+                    Text("MICROPHONE ACCESS DENIED")
+                        .font(.system(size: 9, weight: .bold)).foregroundStyle(DS.fault)
+                }
             }
-            .frame(width: 340)
+            .padding(.leading, 62)
+            .frame(height: 24)
 
-            VStack(alignment: .leading, spacing: 10) {
-                Text("OUTPUTS").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 13) {
+                VStack(spacing: 9) {
+                    ForEach(0..<4, id: \.self) { StripView(model: model, index: $0) }
+                }
+                .frame(width: 336)
 
-                ForEach(0..<4, id: \.self) { b in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 6) {
-                            Text(BUS_NAMES[b])
-                                .font(.system(size: 11, weight: .bold))
-                                .frame(width: 16, height: 16)
-                                .background(RoundedRectangle(cornerRadius: 3)
-                                    .fill(model.buses[b].deviceUID.isEmpty
-                                          ? Color.primary.opacity(0.07) : Color.accentColor.opacity(0.85)))
-                                .foregroundStyle(model.buses[b].deviceUID.isEmpty ? Color.secondary : .white)
-                            Picker("", selection: Binding(
-                                get: { model.buses[b].deviceUID },
-                                set: { model.setOutput(b, uid: $0) })) {
-                                Text("None").tag("")
-                                ForEach(model.outputCandidates()) { d in Text(d.name).tag(d.uid) }
+                VStack(alignment: .leading, spacing: 9) {
+                    Text("OUTPUTS").font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(DS.textDim)
+
+                    ForEach(0..<4, id: \.self) { b in
+                        let on = !model.buses[b].deviceUID.isEmpty
+                        Panel(live: on) {
+                            VStack(alignment: .leading, spacing: 5) {
+                                HStack(spacing: 7) {
+                                    Text(BUS_NAMES[b])
+                                        .font(.system(size: 11, weight: .bold))
+                                        .frame(width: 18, height: 18)
+                                        .background(RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                            .fill(on ? DS.glowDeep.opacity(0.95) : Color.white.opacity(0.055)))
+                                        .foregroundStyle(on ? DS.textLit : DS.textDim)
+                                    Picker("", selection: Binding(
+                                        get: { model.buses[b].deviceUID },
+                                        set: { model.setOutput(b, uid: $0) })) {
+                                        Text("None").tag("")
+                                        ForEach(model.outputCandidates()) { d in Text(d.name).tag(d.uid) }
+                                    }
+                                    .labelsHidden().pickerStyle(.menu).controlSize(.small)
+                                }
+                                if on && !model.buses[b].detail.isEmpty {
+                                    Text(model.buses[b].detail)
+                                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(DS.textDim)
+                                }
+                                if !model.buses[b].error.isEmpty {
+                                    Text(model.buses[b].error)
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundStyle(DS.fault)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                             }
-                            .labelsHidden().pickerStyle(.menu)
-                        }
-                        if !model.buses[b].detail.isEmpty && !model.buses[b].deviceUID.isEmpty {
-                            Text(model.buses[b].detail)
-                                .font(.system(size: 9, design: .monospaced))
-                                .foregroundStyle(.tertiary)
-                        }
-                        if !model.buses[b].error.isEmpty {
-                            Text(model.buses[b].error).font(.system(size: 10)).foregroundStyle(.orange)
                         }
                     }
-                    .padding(9)
-                    .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.04)))
+                    Spacer()
                 }
-
-                if model.permissionDenied {
-                    Text("Microphone access denied. Enable MacAmp in System Settings > Privacy & Security > Microphone.")
-                        .font(.system(size: 10)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer()
+                .frame(width: 246)
             }
-            .frame(width: 250)
         }
         .padding(16)
+        .padding(.top, 4)
+        // 336 (strips) + 246 (outputs) + 13 (gap) + 32 (padding). Pinned so the
+        // header's unbounded Spacer cannot make the content width indeterminate
+        // under .windowResizability(.contentSize).
+        .frame(width: 627, alignment: .leading)
+        .background(
+            LinearGradient(colors: [DS.bgTop, DS.bgMid, DS.bgBottom],
+                           startPoint: .top, endPoint: .bottom)
+        )
+        .preferredColorScheme(.dark)
     }
 }
 
@@ -452,6 +547,7 @@ struct MacAmpApp: App {
             ContentView(model: model)
                 .onAppear { NSApp.setActivationPolicy(.regular) }
         }
+        .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
     }
 }
