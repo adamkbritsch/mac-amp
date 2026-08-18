@@ -4,3 +4,4 @@ build/
 .macamp-signing/
 *.p12
 *.pem
+dist/
