@@ -484,6 +484,22 @@ enum TitleBar {
 
     /// Where the Text VIEW must start for the GLYPHS to sit `gap` below the lights.
     static var titleTop: CGFloat { buttonBottom + gap - capInset }
+
+    /// Visible space above the letters: window top to the top of the caps.
+    static var aboveGlyph: CGFloat { buttonBottom + gap }
+
+    /// "MacAmp" has no descenders, so the space between the baseline and the
+    /// bottom of the Text view is invisible too, and has to be discounted when
+    /// balancing -- otherwise the title reads as sitting high in its band.
+    static var descenderInset: CGFloat {
+        let f = NSFont.systemFont(ofSize: wordmarkSize, weight: .bold)
+        let lineHeight = NSLayoutManager().defaultLineHeight(for: f)
+        return lineHeight - capInset - f.capHeight
+    }
+
+    /// Stack spacing that makes the visible gap BELOW the letters match the
+    /// visible gap above them.
+    static var belowTitle: CGFloat { aboveGlyph - descenderInset }
 }
 
 // MARK: - Traffic lights
@@ -558,7 +574,7 @@ struct ContentView: View {
     @ObservedObject var model: MixerModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
+        VStack(alignment: .leading, spacing: 0) {
             // No title bar, so the traffic lights float directly over the
             // gradient. The wordmark is centred on the window rather than the
             // remaining space -- a ZStack, not an HStack with Spacers, so the
@@ -578,6 +594,7 @@ struct ContentView: View {
                 }
             }
             .fixedSize(horizontal: false, vertical: true)
+            .padding(.bottom, TitleBar.belowTitle)
 
             HStack(alignment: .top, spacing: 13) {
                 VStack(spacing: 9) {
@@ -618,6 +635,7 @@ struct ContentView: View {
                                         .font(.system(size: 10, weight: .medium))
                                         .foregroundStyle(DS.fault)
                                         .fixedSize(horizontal: false, vertical: true)
+            .padding(.bottom, TitleBar.belowTitle)
                                 }
                             }
                         }
