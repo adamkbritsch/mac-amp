@@ -753,9 +753,14 @@ struct TrafficLightOffset: NSViewRepresentable {
 
         func apply(_ window: NSWindow?) {
             guard let window else { return }
+
+            // The window is fixed-size (.windowResizability(.contentSize)), so
+            // zoom has nothing to do. Hide it rather than leave a control that
+            // does nothing when clicked.
+            window.standardWindowButton(.zoomButton)?.isHidden = true
+
             for type in [NSWindow.ButtonType.closeButton,
-                         .miniaturizeButton,
-                         .zoomButton] {
+                         .miniaturizeButton] {
                 guard let button = window.standardWindowButton(type),
                       let container = button.superview else { continue }
                 // Titlebar coords run bottom-up, so lowering the button means
