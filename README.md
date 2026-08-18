@@ -205,6 +205,47 @@ two sources without them. Tone shaping is a different job.
 It also does not stream or encode. LadioCast's Icecast/RTMP/SHOUTcast half is
 broadcast plumbing, and this is not a broadcast tool.
 
+## Permissions and signing
+
+Capturing from any audio input requires TCC microphone authorisation, including
+USB interfaces that are not microphones. If it is denied, CoreAudio returns
+digital silence rather than an error, so MacAmp checks authorisation explicitly
+and says so rather than appearing to work while playing nothing.
+
+Grant it once and it should never ask again — but that only holds if the app is
+signed with a **stable identity**. Ad-hoc signing (`codesign -s -`) produces a
+designated requirement that is a bare hash of the binary:
+
+```
+designated => cdhash H"986a18c4cca2a999ef2d5ab992b0043b102cd52c"
+```
+
+TCC keys the grant to that requirement, and the hash changes on every build. So
+each rebuild is a brand-new app that has never been granted anything, and macOS
+asks again. Signing with a certificate makes the requirement identity-based:
+
+```
+designated => identifier "com.adambritsch.macamp" and certificate root = H"68537b06..."
+```
+
+which is byte-identical across rebuilds, so the grant survives.
+
+```bash
+./make-signing-identity.sh   # once
+```
+
+`build.sh` picks the certificate up automatically and warns if it is missing.
+**No Apple Developer account is involved.** Notarisation and a Developer ID
+solve a different problem — handing the app to other people — and would not help
+here. The private key lives in `~/.macamp-signing`, never in this repository.
+
+Two details worth knowing if you adapt this elsewhere. macOS cannot read
+OpenSSL 3's default PKCS#12 MAC and PBE, so the legacy parameters in
+`make-signing-identity.sh` are required rather than cautious. And the finished
+certificate reports `CSSMERR_TP_NOT_TRUSTED`, which is expected and harmless:
+trust governs Gatekeeper, while the designated requirement only needs the
+certificate's leaf hash.
+
 ## Credits
 
 Amp artwork from [SVG Repo](https://www.svgrepo.com/), recoloured and composited
