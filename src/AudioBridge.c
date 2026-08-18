@@ -11,7 +11,7 @@
 #define MA_BUFFER_FRAMES   256u
 #define MA_MAX_SLICE       4096u
 #define MA_RING_FRAMES     16384u
-#define MA_TARGET_FILL     1536u
+#define MA_TARGET_FILL     512u
 #define MA_DRIFT_GAIN      2.0e-6
 #define MA_DRIFT_MAX       0.002
 
@@ -62,6 +62,7 @@ typedef struct {
     _Atomic uint32_t underruns;
     _Atomic uint32_t fill;
     _Atomic int      active;
+    _Atomic int      primed;   // set once the bus has mixed a full slice
 } OutputBus;
 
 struct MacAmpEngine {
@@ -259,7 +260,13 @@ static OSStatus outputProc(void *ref, AudioUnitRenderActionFlags *flags,
         }
     }
 
-    if (starved) atomic_fetch_add_explicit(&o->underruns, 1, memory_order_relaxed);
+    // Only count a starve once the bus has successfully mixed at least one
+    // slice. Before that the ring is simply still filling, and reporting those
+    // as dropouts makes a perfectly healthy start look like a fault.
+    if (!starved && minFill != 0xFFFFFFFFu)
+        atomic_store_explicit(&o->primed, 1, memory_order_relaxed);
+    else if (starved && atomic_load_explicit(&o->primed, memory_order_relaxed))
+        atomic_fetch_add_explicit(&o->underruns, 1, memory_order_relaxed);
     atomic_store_explicit(&o->fill, minFill == 0xFFFFFFFFu ? 0 : minFill, memory_order_relaxed);
 
     for (UInt32 b = 2; b < ioData->mNumberBuffers; b++)
@@ -510,6 +517,7 @@ int macamp_set_output(MacAmpEngine *e, int bus, AudioDeviceID dev, char *err, si
     OCHK(AudioUnitInitialize(o->unit), "Initializing the output unit failed");
 
     atomic_store_explicit(&o->underruns, 0, memory_order_relaxed);
+    atomic_store_explicit(&o->primed, 0, memory_order_relaxed);
     atomic_store_explicit(&o->active, 1, memory_order_release);
 
     for (int i = 0; i < MA_MAX_INPUTS; i++) {
