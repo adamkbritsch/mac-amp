@@ -23,6 +23,52 @@ enum MidiQuery {
         }
     }
 
+    /// CoreMIDI composes an endpoint's display name from its parent device's
+    /// name plus its own. Setting only the endpoint therefore APPENDS -- an
+    /// "Amphonix 2" renamed to "Keys" reads as "Amphonix 2 Keys". Both have to
+    /// be set for the name to replace rather than extend.
+    ///
+    /// kMIDIPropertyDisplayName itself is read-only; writing it returns -50.
+    static func names(of uid: MIDIUniqueID) -> (endpoint: String, device: String?)? {
+        guard let ep = endpoint(for: uid) else { return nil }
+        func str(_ o: MIDIObjectRef) -> String? {
+            var cf: Unmanaged<CFString>?
+            guard MIDIObjectGetStringProperty(o, kMIDIPropertyName, &cf) == noErr,
+                  let v = cf else { return nil }
+            return v.takeRetainedValue() as String
+        }
+        var entity = MIDIEntityRef(); MIDIEndpointGetEntity(ep, &entity)
+        var device = MIDIDeviceRef(); if entity != 0 { MIDIEntityGetDevice(entity, &device) }
+        guard let epName = str(ep) else { return nil }
+        return (epName, device != 0 ? str(device) : nil)
+    }
+
+    /// System-wide and persistent: every app sees this name, and CoreMIDI keeps
+    /// it across reboots.
+    @discardableResult
+    static func rename(uid: MIDIUniqueID, endpointName: String, deviceName: String?) -> Bool {
+        guard let ep = endpoint(for: uid) else { return false }
+        var entity = MIDIEntityRef(); MIDIEndpointGetEntity(ep, &entity)
+        var device = MIDIDeviceRef(); if entity != 0 { MIDIEntityGetDevice(entity, &device) }
+        if device != 0, let dn = deviceName {
+            MIDIObjectSetStringProperty(device, kMIDIPropertyName, dn as CFString)
+        }
+        return MIDIObjectSetStringProperty(ep, kMIDIPropertyName, endpointName as CFString) == noErr
+    }
+
+    @discardableResult
+    static func rename(uid: MIDIUniqueID, to name: String) -> Bool {
+        rename(uid: uid, endpointName: name, deviceName: name)
+    }
+
+    static func name(of uid: MIDIUniqueID) -> String? {
+        guard let ep = endpoint(for: uid) else { return nil }
+        var cf: Unmanaged<CFString>?
+        guard MIDIObjectGetStringProperty(ep, kMIDIPropertyDisplayName, &cf) == noErr,
+              let v = cf else { return nil }
+        return v.takeRetainedValue() as String
+    }
+
     static func endpoint(for uid: MIDIUniqueID) -> MIDIEndpointRef? {
         for i in 0..<MIDIGetNumberOfSources() {
             let ref = MIDIGetSource(i)

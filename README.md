@@ -208,17 +208,21 @@ gain, pan, mute, solo, gate, metering and routing all apply unchanged.
   a key while the window is not focused still sends its note-off, so nothing
   gets stranded on.
 - **Panic** silences every sounding note on the strip.
-- **Rename a source.** Controllers routinely report themselves as "USB MIDI
-  Device", which stops being useful the moment you own two. **Name** sets a
-  local label; clearing the field restores whatever CoreMIDI reports. The alias
-  is stored against the endpoint's unique ID, so it survives replugging and
-  reboots, and a renamed device that is currently unplugged still shows its
-  name rather than a bare number.
+- **Rename a source, system-wide.** Controllers routinely report themselves as
+  "USB MIDI Device", which stops being useful the moment you own two. **Name**
+  writes the new name into CoreMIDI, so **every app on the Mac sees it** and it
+  survives reboots — the same thing Audio MIDI Setup does.
 
-  This is deliberately local to MacAmp. CoreMIDI does allow writing
-  `kMIDIPropertyName` on an endpoint — that is what Audio MIDI Setup does — but
-  that changes the name for every app on the machine, and MacAmp does not
-  quietly edit state it does not own.
+  Two details that are easy to get wrong. `kMIDIPropertyDisplayName` is
+  **read-only** — writing it returns `-50`. And a display name is *composed*
+  from the parent device's name plus the endpoint's, so setting only the
+  endpoint appends rather than replaces: renaming "Amphonix 2" to "Keys" yields
+  "Amphonix 2 Keys". MacAmp sets `kMIDIPropertyName` on both the device and the
+  endpoint, which is what makes the name replace cleanly.
+
+  CoreMIDI offers no way to ask for a device's factory name once it has been
+  overwritten, so MacAmp records the original pair the first time you rename a
+  device and **Restore** writes it back.
 
 The synth runs at 48 kHz internally and is resampled to each bus exactly like a
 hardware input. Because it has no hardware clock, nothing paces it — a producer

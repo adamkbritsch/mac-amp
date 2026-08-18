@@ -60,9 +60,14 @@ final class MixerModel: ObservableObject {
     @Published var inputs:  [AudioDevice] = []
     @Published var outputs: [AudioDevice] = []
     @Published var midiSources: [MidiSource] = []
-    /// Local, per-endpoint display names. Controllers report things like
-    /// "USB MIDI Device", which is useless once you own two of them.
-    @Published var midiAliases: [MIDIUniqueID: String] = [:]
+    /// The factory name of any endpoint we have renamed. Renaming is written
+    /// into CoreMIDI and is system-wide and persistent; it cannot be undone by
+    /// asking the OS, so the original is recorded here the first time a device
+    /// is renamed and is what Restore writes back.
+    /// [endpointName, deviceName] as found before the first rename. Both are
+    /// needed: restoring only the endpoint would leave the device renamed, and
+    /// the display name is composed from the pair.
+    @Published var midiOriginalNames: [MIDIUniqueID: [String]] = [:]
     @Published var permissionDenied = false
 
     private let engine: OpaquePointer? = macamp_create()
@@ -197,42 +202,50 @@ final class MixerModel: ObservableObject {
 
     func refreshMidiSources() { midiSources = MidiQuery.sources() }
 
-    /// The alias if one is set, otherwise whatever CoreMIDI reports.
-    func displayName(_ src: MidiSource) -> String {
-        let a = midiAliases[src.id]?.trimmingCharacters(in: .whitespaces)
-        return (a?.isEmpty == false) ? a! : src.name
-    }
+    /// Names now come straight from CoreMIDI, since a rename is written there.
+    func displayName(_ src: MidiSource) -> String { src.name }
 
     func displayName(forUID uid: MIDIUniqueID) -> String {
-        if let src = midiSources.first(where: { $0.id == uid }) { return displayName(src) }
-        let a = midiAliases[uid]?.trimmingCharacters(in: .whitespaces)
-        // A renamed device that is currently unplugged should still be
-        // recognisable rather than collapsing to a bare number.
-        return (a?.isEmpty == false) ? a! : "Unavailable"
-    }
-
-    /// An empty or whitespace-only name clears the alias rather than storing a
-    /// blank that would render as nothing.
-    func setAlias(_ uid: MIDIUniqueID, _ name: String) {
-        let t = name.trimmingCharacters(in: .whitespaces)
-        if t.isEmpty { midiAliases.removeValue(forKey: uid) } else { midiAliases[uid] = t }
-        persistAliases()
-    }
-
-    func originalName(_ uid: MIDIUniqueID) -> String {
         midiSources.first(where: { $0.id == uid })?.name ?? "Unavailable"
     }
 
-    private func persistAliases() {
-        // UserDefaults dictionaries need String keys.
-        let d = Dictionary(uniqueKeysWithValues: midiAliases.map { (String($0.key), $0.value) })
-        UserDefaults.standard.set(d, forKey: "midiAliases")
+    /// System-wide: this is the name every other app will see too.
+    func renameMidi(_ uid: MIDIUniqueID, to name: String) {
+        let t = name.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty, uid != 0 else { return }
+        // Record the factory names once, before the first rename overwrites them.
+        if midiOriginalNames[uid] == nil, let n = MidiQuery.names(of: uid) {
+            midiOriginalNames[uid] = [n.endpoint, n.device ?? n.endpoint]
+        }
+        MidiQuery.rename(uid: uid, to: t)
+        persistOriginals()
+        refreshMidiSources()
+    }
+
+    var canRestore: (MIDIUniqueID) -> Bool { { self.midiOriginalNames[$0] != nil } }
+
+    func restoreMidiName(_ uid: MIDIUniqueID) {
+        guard let o = midiOriginalNames[uid], o.count == 2 else { return }
+        MidiQuery.rename(uid: uid, endpointName: o[0], deviceName: o[1])
+        midiOriginalNames.removeValue(forKey: uid)
+        persistOriginals()
+        refreshMidiSources()
+    }
+
+    func originalName(_ uid: MIDIUniqueID) -> String {
+        midiOriginalNames[uid]?.first
+            ?? midiSources.first(where: { $0.id == uid })?.name ?? "Unavailable"
+    }
+
+    private func persistOriginals() {
+        let d = Dictionary(uniqueKeysWithValues: midiOriginalNames.map { (String($0.key), $0.value) })
+        UserDefaults.standard.set(d, forKey: "midiOriginalNames")
     }
 
     private func restoreAliases() {
-        guard let raw = UserDefaults.standard.dictionary(forKey: "midiAliases") as? [String: String] else { return }
-        midiAliases = Dictionary(uniqueKeysWithValues: raw.compactMap { k, v in
-            MIDIUniqueID(k).map { ($0, v) }
+        guard let raw = UserDefaults.standard.dictionary(forKey: "midiOriginalNames") as? [String: [String]] else { return }
+        midiOriginalNames = Dictionary(uniqueKeysWithValues: raw.compactMap { k, v in
+            v.count == 2 ? MIDIUniqueID(k).map { ($0, v) } : nil
         })
     }
 
@@ -595,7 +608,7 @@ struct StripView: View {
     private var strip: MixerModel.Strip { model.strips[index] }
 
     private func commitRename() {
-        model.setAlias(strip.midiSourceUID, draftName)
+        model.renameMidi(strip.midiSourceUID, to: draftName)
         renaming = false
     }
     private var live: Bool { !strip.deviceUID.isEmpty }
@@ -691,7 +704,7 @@ struct StripView: View {
                     StateButton(label: renaming ? "Done" : "Name", on: renaming) {
                         if renaming { commitRename() }
                         else {
-                            draftName = model.midiAliases[strip.midiSourceUID] ?? ""
+                            draftName = model.displayName(forUID: strip.midiSourceUID)
                             renaming = true
                         }
                     }
@@ -699,16 +712,23 @@ struct StripView: View {
             }
 
             if renaming && strip.midiSourceUID != 0 {
-                HStack(spacing: 6) {
-                    TextField(model.originalName(strip.midiSourceUID), text: $draftName)
-                        .textFieldStyle(.roundedBorder)
-                        .controlSize(.mini)
-                        .font(.system(size: 11))
-                        .onSubmit { commitRename() }
-                    // Clearing the field restores whatever CoreMIDI reports.
-                    StateButton(label: "Clear", on: false) {
-                        draftName = ""; commitRename()
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        TextField(model.originalName(strip.midiSourceUID), text: $draftName)
+                            .textFieldStyle(.roundedBorder)
+                            .controlSize(.mini)
+                            .font(.system(size: 11))
+                            .onSubmit { commitRename() }
+                        if model.midiOriginalNames[strip.midiSourceUID] != nil {
+                            StateButton(label: "Restore", on: false) {
+                                model.restoreMidiName(strip.midiSourceUID)
+                                renaming = false
+                            }
+                        }
                     }
+                    Text("Renames the device for every app on this Mac.")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(DS.textDim)
                 }
             }
 
