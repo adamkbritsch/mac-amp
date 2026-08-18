@@ -1162,7 +1162,7 @@ struct MacAmpApp: App {
 
             CommandGroup(replacing: .help) {
                 Button("MacAmp on GitHub") {
-                    if let u = URL(string: "https://github.com/adamkbritsch/macamp") {
+                    if let u = URL(string: "https://github.com/adamkbritsch/mac-amp") {
                         NSWorkspace.shared.open(u)
                     }
                 }

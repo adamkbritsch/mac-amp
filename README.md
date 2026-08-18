@@ -109,7 +109,7 @@ nm build/obj/AudioBridge.o | grep swift_    # returns nothing
 ## Install
 
 ```bash
-git clone https://github.com/adamkbritsch/macamp.git
+git clone https://github.com/adamkbritsch/mac-amp.git
 cd macamp
 ./build.sh
 ./install.sh
