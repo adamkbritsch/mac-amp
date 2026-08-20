@@ -283,21 +283,41 @@ device's nominal rate is shared state every other app on the machine sees.
 
 ### Latency
 
-Round trip is device buffers plus ring backlog. Buffers are 128 frames a side,
-about 5.5 ms at these rates, and the backlog **tunes itself**: each bus starts
-at a 96-frame floor and raises its own target only when it actually starves,
+Round trip is device buffers plus ring backlog. Buffers are 64 frames a side,
+about 2.8 ms at these rates, and the backlog **tunes itself**: each bus starts
+at a 48-frame floor and raises its own target only when it actually starves,
 creeping back down after a clean stretch. It rises in 128-frame steps and falls
 in 16-frame ones, because a few milliseconds too conservative is inaudible while
 one frame too aggressive is a dropout you hear.
 
-The floor is roughly **8 ms**, and each bus settles wherever this machine can
+The floor is roughly **4 ms**, and each bus settles wherever this machine can
 actually hold under whatever else is running. The right backlog depends on
 system load, which no constant chosen at build time can know.
 
-This is not free. Halving the buffers doubles how often the render callbacks
-fire — measured CPU went from about 16% to about 34%. If you would rather have
-the CPU back than the milliseconds, raise `MA_BUFFER_FRAMES` in
-`src/AudioBridge.c`.
+This is not free: halving the buffers doubles how often the render callbacks
+fire. `MA_BUFFER_FRAMES` in `src/AudioBridge.c` is the knob if you would rather
+have the CPU back.
+
+**There is a floor, and going lower stops helping.** The devices here accept
+buffers down to 14 frames, which would put the software path near 1 ms — but
+three things MacAmp cannot touch sit underneath it:
+
+| | |
+|---|---|
+| USB Audio 2.0 transport | ~1–2 ms, a 1 ms service interval each way |
+| The interface's own DSP | amp and cabinet modelling, before USB |
+| Air | ~1 ms per foot from the speaker to your ear |
+
+Pushing the buffers below a few milliseconds also stops paying off under load:
+the adaptive backlog simply raises itself to compensate for the starves, and
+the round trip lands where it would have anyway, with more CPU spent getting
+there.
+
+**If you want genuinely zero latency, do not use the Mac.** A modelling
+interface's own headphone jack is a direct hardware path with nothing round
+tripping through the computer at all. MacAmp exists to put the sound somewhere
+that jack cannot reach — the built-in speakers, a stereo, several destinations
+at once — and that convenience is what a few milliseconds buys.
 
 ### Feedback
 
