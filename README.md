@@ -283,15 +283,27 @@ device's nominal rate is shared state every other app on the machine sees.
 
 ### Latency
 
-Round trip is device buffers plus ring backlog. Buffers are 64 frames a side,
-about 2.8 ms at these rates, and the backlog **tunes itself**: each bus starts
-at a 48-frame floor and raises its own target only when it actually starves,
-creeping back down after a clean stretch. It rises in 128-frame steps and falls
+Round trip is device buffers plus ring backlog. Buffers are 32 frames a side,
+and the backlog **tunes itself**: each bus starts at a 32-frame floor and raises
+its own target only when it actually starves, creeping back down after a clean
+stretch. It rises in 128-frame steps and falls
 in 16-frame ones, because a few milliseconds too conservative is inaudible while
 one frame too aggressive is a dropout you hear.
 
-The floor is roughly **4 ms**, and each bus settles wherever this machine can
-actually hold under whatever else is running. The right backlog depends on
+Measured on a busy machine — a video encode running, load average near 55 — a
+bus settles around **2.6–2.8 ms**, with the backlog stabilising at 64–80 frames
+rather than the 32-frame floor. That is the mechanism working as intended: it
+tried the floor, starved a handful of times, backed off, and crept down to the
+lowest level it could actually hold. On an idle machine it will sit lower.
+
+You can watch it do this:
+
+```bash
+log stream --level info --predicate 'eventMessage CONTAINS "underruns="'
+```
+
+Note `log stream` rather than `log show` — these are debug-level records and
+are not persisted to disk. The right backlog depends on
 system load, which no constant chosen at build time can know.
 
 This is not free: halving the buffers doubles how often the render callbacks

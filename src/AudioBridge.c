@@ -10,7 +10,7 @@
 #include <pthread.h>
 #include <unistd.h>
 
-#define MA_BUFFER_FRAMES   64u
+#define MA_BUFFER_FRAMES   32u
 #define MA_MAX_SLICE       4096u
 #define MA_RING_FRAMES     16384u
 // The ring backlog is no longer a fixed guess. Each bus starts at the floor and
@@ -18,11 +18,11 @@
 // when it has been clean for a while -- so it settles at the lowest value this
 // machine can hold under whatever else is running, instead of a number chosen
 // for the worst case.
-#define MA_TARGET_MIN      48u
+#define MA_TARGET_MIN      32u
 #define MA_TARGET_MAX      3072u
-#define MA_TARGET_BUMP     64u      // added on a starve
+#define MA_TARGET_BUMP     48u      // added on a starve
 #define MA_TARGET_DECAY    16u      // removed after a clean stretch
-#define MA_CLEAN_SLICES    2400u    // ~3 s of clean 64-frame slices at 48k
+#define MA_CLEAN_SLICES    4800u    // ~3 s of clean 32-frame slices at 48k
 #define MA_DRIFT_GAIN      2.0e-6
 #define MA_DRIFT_MAX       0.002
 
@@ -815,6 +815,11 @@ double macamp_output_rate(const MacAmpEngine *e, int bus) {
     if (!e || bus < 0 || bus >= MA_MAX_OUTPUTS) return 0.0;
     return e->out[bus].rate;
 }
+uint32_t macamp_target_frames(const MacAmpEngine *e, int bus) {
+    if (!e || bus < 0 || bus >= MA_MAX_OUTPUTS) return 0;
+    return atomic_load_explicit(&e->out[bus].target, memory_order_relaxed);
+}
+
 uint32_t macamp_underruns(const MacAmpEngine *e, int bus) {
     if (!e || bus < 0 || bus >= MA_MAX_OUTPUTS) return 0;
     return atomic_load_explicit(&e->out[bus].underruns, memory_order_relaxed);

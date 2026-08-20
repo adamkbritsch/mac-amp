@@ -3,6 +3,7 @@ import AppKit
 import AVFoundation
 import CoreAudio
 import CoreMIDI
+import os
 
 let BUS_NAMES = ["A", "B", "C", "D"]
 
@@ -77,6 +78,7 @@ final class MixerModel: ObservableObject {
     private var meterTimer: Timer?
     let meters = Meters()
     private var meterTick = 0
+    private let diag = Logger(subsystem: "com.adambritsch.macamp", category: "latency")
     private var receivers: [MidiReceiver?] = [nil, nil, nil, nil]
     private var keyboardMidi: KeyboardMidi?
     private var keyboardSlot: Int?
@@ -436,6 +438,18 @@ final class MixerModel: ObservableObject {
         // Text readouts do not need 30 Hz; a quarter of a second is plenty and
         // each update rebuilds the bus panels.
         meterTick += 1
+
+        // Once every ~5 s, record what the adaptive backlog actually settled
+        // at. Makes the latency claim checkable with `log show` rather than
+        // something to take on trust.
+        if meterTick % 150 == 0 {
+            for b in 0..<4 where macamp_output_active(engine, Int32(b)) != 0 {
+                diag.notice("""
+                    bus \(BUS_NAMES[b], privacy: .public)                     latency=\(macamp_latency_ms(engine, Int32(b)), format: .fixed(precision: 2), privacy: .public)ms                     target=\(macamp_target_frames(engine, Int32(b)), privacy: .public)f                     underruns=\(macamp_underruns(engine, Int32(b)), privacy: .public)
+                    """)
+            }
+        }
+
         guard meterTick % 8 == 0 else { return }
         for b in 0..<4 where macamp_output_active(engine, Int32(b)) != 0 {
             let ms = macamp_latency_ms(engine, Int32(b))

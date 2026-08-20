@@ -93,5 +93,8 @@ double   macamp_input_rate (const MacAmpEngine *e, int slot);
 double   macamp_output_rate(const MacAmpEngine *e, int bus);
 double   macamp_latency_ms (const MacAmpEngine *e, int bus);
 uint32_t macamp_underruns  (const MacAmpEngine *e, int bus);
+/// The bus's current adaptive backlog target, in frames. If this has climbed
+/// above MA_TARGET_MIN the machine could not hold the floor.
+uint32_t macamp_target_frames(const MacAmpEngine *e, int bus);
 
 #endif
